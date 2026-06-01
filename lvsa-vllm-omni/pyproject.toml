@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lvsa-vllm-omni"
+version = "1.0.0"
+description = "LVSA sparse attention backend for vllm-omni"
+requires-python = ">=3.10"
+dependencies = [
+    "lvsa>=1.0.0",
+    "torch>=2.1.0",
+]
+
+[project.optional-dependencies]
+flashinfer = ["flashinfer-python>=0.2"]
+dev = ["pytest>=7"]
+
+[project.entry-points."vllm_omni.general_plugins"]
+lvsa = "lvsa_vllm_omni.register:register_lvsa_backend"
+
+[tool.setuptools.packages.find]
+include = ["lvsa_vllm_omni*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

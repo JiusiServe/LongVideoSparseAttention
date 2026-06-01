@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VQeval Report - {{ report.video_path | e }}</title>
+<style>
+:root {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --surface2: #334155;
+    --text: #e2e8f0;
+    --text-dim: #94a3b8;
+    --accent: #38bdf8;
+    --green: #4ade80;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --border: #475569;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+h1 { font-size: 1.8rem; margin-bottom: 0.5rem; }
+h2 { font-size: 1.3rem; margin-bottom: 1rem; color: var(--accent); }
+h3 { font-size: 1.1rem; margin-bottom: 0.5rem; }
+.header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2rem;
+}
+.meta {
+    display: flex;
+    gap: 2rem;
+    flex-wrap: wrap;
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+.meta span { white-space: nowrap; }
+.composite {
+    background: var(--surface);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    text-align: center;
+}
+.score-big {
+    font-size: 4rem;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 0.5rem;
+}
+.verdict-big {
+    font-size: 1.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+.dimensions {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+.dim-card {
+    background: var(--surface);
+    border-radius: 10px;
+    padding: 1.5rem;
+    border: 1px solid var(--border);
+}
+.dim-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+.dim-score {
+    font-size: 2rem;
+    font-weight: 700;
+}
+.dim-verdict {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+}
+.score-bar {
+    height: 6px;
+    background: var(--surface2);
+    border-radius: 3px;
+    margin-bottom: 1rem;
+    overflow: hidden;
+}
+.score-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+.metrics-table {
+    width: 100%;
+    font-size: 0.85rem;
+}
+.metrics-table td {
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--surface2);
+}
+.metrics-table td:first-child {
+    color: var(--text-dim);
+}
+.metrics-table td:last-child {
+    text-align: right;
+    font-family: 'Fira Code', 'Consolas', monospace;
+}
+.verdict-excellent, .verdict-good { color: var(--green); }
+.verdict-fair { color: var(--yellow); }
+.verdict-poor, .verdict-bad { color: var(--red); }
+.bg-excellent, .bg-good { background: var(--green); }
+.bg-fair { background: var(--yellow); }
+.bg-poor, .bg-bad { background: var(--red); }
+.footer {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>VQeval Quality Report</h1>
+    <div class="meta">
+        <span>{{ report.video_path | e }}</span>
+        <span>{{ report.video_meta.width }}x{{ report.video_meta.height }}</span>
+        <span>{{ "%.1f"|format(report.video_meta.fps) }} fps</span>
+        <span>{{ "%.2f"|format(report.video_meta.duration) }}s</span>
+        <span>{{ report.video_meta.sampled_frames }} frames sampled</span>
+        <span>{{ "%.1f"|format(report.elapsed_seconds) }}s elapsed</span>
+    </div>
+</div>
+
+<div class="composite">
+    <div class="score-big verdict-{{ report.composite_verdict }}">
+        {{ "%.0f"|format(report.composite_score) }}
+    </div>
+    <div class="verdict-big verdict-{{ report.composite_verdict }}">
+        {{ report.composite_verdict }}
+    </div>
+</div>
+
+<h2>Dimension Scores</h2>
+<div class="dimensions">
+{% for dim_name, dim_data in report.dimensions.items() %}
+    <div class="dim-card">
+        <div class="dim-header">
+            <div>
+                <h3>{{ dim_name.replace('_', ' ').title() }}</h3>
+            </div>
+            <div>
+                <span class="dim-score verdict-{{ dim_data.verdict }}">{{ "%.0f"|format(dim_data.score) }}</span>
+                <span class="dim-verdict verdict-{{ dim_data.verdict }}">{{ dim_data.verdict }}</span>
+            </div>
+        </div>
+        <div class="score-bar">
+            <div class="score-bar-fill bg-{{ dim_data.verdict }}"
+                 style="width: {{ dim_data.score }}%"></div>
+        </div>
+        <table class="metrics-table">
+        {% for key, value in dim_data.items() %}
+            {% if key not in ('score', 'verdict') %}
+            <tr>
+                <td>{{ key.replace('_', ' ') }}</td>
+                <td>
+                {% if value is number %}
+                    {{ "%.4f"|format(value) if value != value|int else value }}
+                {% elif value is iterable and value is not string %}
+                    {{ value | join(', ') }}
+                {% elif value is none %}
+                    n/a
+                {% else %}
+                    {{ value }}
+                {% endif %}
+                </td>
+            </tr>
+            {% endif %}
+        {% endfor %}
+        </table>
+    </div>
+{% endfor %}
+</div>
+
+<h2>Weights</h2>
+<div class="dim-card">
+    <table class="metrics-table">
+    {% for dim, weight in report.weights.items() %}
+        <tr>
+            <td>{{ dim.replace('_', ' ').title() }}</td>
+            <td>{{ "%.2f"|format(weight) }}</td>
+        </tr>
+    {% endfor %}
+    </table>
+</div>
+
+<div class="footer">
+    Generated by VQeval v0.1.0
+</div>
+
+</body>
+</html>

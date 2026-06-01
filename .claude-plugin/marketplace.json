@@ -1,0 +1,44 @@
+{
+  "name": "lvsa",
+  "owner": {
+    "name": "LVSA"
+  },
+  "plugins": [
+    {
+      "name": "lvsa-quickstart",
+      "source": "./skills/lvsa-quickstart",
+      "description": "Install LVSA and generate your first long video. Picks SDPA vs FlashInfer, sets the right LVSA_REFERENCE_LATENT_FRAMES per model, verifies the sparse path engaged.",
+      "version": "1.0.0"
+    },
+    {
+      "name": "lvsa-tuning",
+      "source": "./skills/lvsa-tuning",
+      "description": "Tune LVSA's sparsity_scale, window_size, n_first_frames, and reference_latent_frames for a target model and quality/speed trade-off.",
+      "version": "1.0.0"
+    },
+    {
+      "name": "lvsa-troubleshooting",
+      "source": "./skills/lvsa-troubleshooting",
+      "description": "Diagnose LVSA failure modes: silent dense fallback, OOM at long sequences, missing output mp4 in Docker, quality regression at training reference.",
+      "version": "1.0.0"
+    },
+    {
+      "name": "lvsa-add-model",
+      "source": "./skills/lvsa-add-model",
+      "description": "Add LVSA support for a new video diffusion model by implementing the ModelAdapter ABC and wiring it into examples/.",
+      "version": "1.0.0"
+    },
+    {
+      "name": "lvsa-vllm-omni",
+      "source": "./skills/lvsa-vllm-omni",
+      "description": "Configure and run the LVSA vllm-omni serving plugin: env vars, geometry overrides, hooks for Wan vs HunyuanVideo, multi-GPU Ulysses.",
+      "version": "1.0.0"
+    },
+    {
+      "name": "lvsa-reproduce-paper",
+      "source": "./skills/lvsa-reproduce-paper",
+      "description": "Reproduce the headline paper numbers (SotA grid, latency scaling) using the bundled benchmarks/ scripts, VQeval, and VBench-Long.",
+      "version": "1.0.0"
+    }
+  ]
+}

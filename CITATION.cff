@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+title: "LVSA: Training-Free Sparse Attention for Long Video Diffusion"
+message: "If you use this software in your research, please cite as below."
+type: software
+authors:
+  - family-names: Glorian
+    given-names: Gael
+  - family-names: Lamprou
+    given-names: Ioannis
+  - family-names: Zhang
+    given-names: Zhen
+  - family-names: Yuan
+    given-names: Yujie
+  - family-names: Liu
+    given-names: Hongsheng
+repository-code: "https://github.com/JiusiServe/LongVideoSparseAttention"
+url: "https://github.com/JiusiServe/LongVideoSparseAttention"
+license: Apache-2.0
+version: "1.0.0"
+date-released: 2026-05-27
+preferred-citation:
+  type: article
+  title: "LVSA: Training-Free Sparse Attention for Long Video Diffusion"
+  authors:
+    - family-names: Glorian
+      given-names: Gael
+    - family-names: Lamprou
+      given-names: Ioannis
+    - family-names: Zhang
+      given-names: Zhen
+    - family-names: Yuan
+      given-names: Yujie
+    - family-names: Liu
+      given-names: Hongsheng
+  year: 2026
+  url: "https://arxiv.org/abs/2605.31057"
