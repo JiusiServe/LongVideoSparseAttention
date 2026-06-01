@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Model weights / caches
+vqeval/models/weights/
+*.pt
+*.pth
+*.bin
+*.safetensors
+.cache/
+
+# Reports (generated output)
+*.html
+*.csv
+!vqeval/reports/templates/*.html
+
+# Misc
+*.log

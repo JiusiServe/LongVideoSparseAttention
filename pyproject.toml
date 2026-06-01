@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lvsa"
+version = "1.0.0"
+description = "Long Video Sparse Attention — block-sparse sliding window attention for video diffusion transformers"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+    "torch>=2.1.0",
+]
+
+[project.optional-dependencies]
+flashinfer = ["flashinfer-python>=0.2", "flashinfer-cubin"]
+diffusers = [
+    "diffusers>=0.31",
+    "transformers",
+    "accelerate",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
+]
+hunyuan = ["qwen-vl-utils", "sentencepiece"]
+dev = ["pytest>=7"]
+all = ["lvsa[flashinfer,diffusers,hunyuan,dev]"]
+
+[tool.setuptools.packages.find]
+include = ["lvsa*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# importlib mode avoids module-name collisions when collecting tests across
+# multiple subpackages that all use generic names like test_config.py.
+addopts = "--import-mode=importlib"

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# pytest / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generation outputs (per-run, gitignored by default)
+out/
+*.pt
+
+# Triton / FlashInfer JIT cache
+.triton/
+.flashinfer/
+
+# Local environment files
+.env
+.env.local
