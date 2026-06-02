@@ -13,7 +13,7 @@ process. Triggered automatically when ``LVSA_WAN_HOOK=1``.
 """
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 
@@ -37,11 +37,15 @@ def install_wan_lvsa_hook(total_latent_frames: int) -> None:
     """
     from vllm_omni.diffusion.models.wan2_2.wan2_2_transformer import (
         WanSelfAttention,
-        apply_rotary_emb_wan,
     )
+    # vllm-omni 0.22 removed the free function ``apply_rotary_emb_wan``; RoPE is
+    # now applied through ``RotaryEmbeddingWan``. It is stateless (no params /
+    # buffers, cos & sin are passed in), so we build it once and reuse it.
+    from vllm_omni.diffusion.layers.rope import RotaryEmbeddingWan
 
     config = LVSAConfig.from_env()
     state = HunyuanLVSAState(config)
+    wan_rope = RotaryEmbeddingWan(is_neox_style=False, half_head_dim=True)
 
     _orig_forward = WanSelfAttention.forward
 
@@ -49,9 +53,14 @@ def install_wan_lvsa_hook(total_latent_frames: int) -> None:
         self,
         hidden_states: torch.Tensor,
         rotary_emb: Optional[tuple] = None,
-        attn_mask: Optional[torch.Tensor] = None,
+        attn_metadata: Optional[Any] = None,
     ) -> torch.Tensor:
-        """LVSA-enhanced forward for Wan self-attention."""
+        """LVSA-enhanced forward for Wan self-attention.
+
+        Signature mirrors vllm-omni 0.22 ``WanSelfAttention.forward``: the
+        third argument is now an ``AttentionMetadata`` (previously a raw
+        ``attn_mask`` tensor in 0.18).
+        """
 
         # ── QKV projection on the (possibly sharded) local seq ──
         qkv, _ = self.to_qkv(hidden_states)
@@ -71,8 +80,8 @@ def install_wan_lvsa_hook(total_latent_frames: int) -> None:
         # Apply Wan-specific RoPE
         if rotary_emb is not None:
             freqs_cos, freqs_sin = rotary_emb
-            query = apply_rotary_emb_wan(query, freqs_cos, freqs_sin)
-            key = apply_rotary_emb_wan(key, freqs_cos, freqs_sin)
+            query = wan_rope(query, freqs_cos, freqs_sin)
+            key = wan_rope(key, freqs_cos, freqs_sin)
 
         local_seq = query.shape[1]
         full_seq = local_seq  # Single-rank assumption (no Ring SP in this release).
@@ -146,25 +155,13 @@ def install_wan_lvsa_hook(total_latent_frames: int) -> None:
                        "distributed": _is_distributed},
             )
 
-        # Fall back to original forward (dense attention via self.attn)
-        # Note: we re-run the full _orig_forward to avoid reimplementing
-        # the original attention call with the correct attn_metadata shape.
-        # The extra QKV projection we just did is wasted work in this path,
-        # but fallback should be rare (only for warmup steps).
-        # For warmup, geometry_ok=False → we go here; performance impact is
-        # negligible since warmup is very few steps.
-
-        from vllm_omni.diffusion.attention.backends.abstract import AttentionMetadata
-        attn_metadata = None
-        if attn_mask is not None:
-            attn_metadata = AttentionMetadata(attn_mask=attn_mask)
-
-        out = self.attn(query, key, value, attn_metadata)
-        out = out.flatten(2, 3)
-        out = out.type_as(query)
-        out = self.to_out(out)
-        out = self.dropout(out)
-        return out
+        # Fall back to the original (dense) forward. We re-run the full
+        # _orig_forward rather than reimplement the attention call: the QKV
+        # projection above becomes wasted work, but this path is rare (warmup /
+        # pre-sharded / distributed), and delegating keeps us correct against
+        # vllm-omni's evolving forward signature (it now builds its own
+        # AttentionMetadata internally from the sequence padding).
+        return _orig_forward(self, hidden_states, rotary_emb, attn_metadata)
 
     # Apply the monkey-patch
     WanSelfAttention.forward = _lvsa_forward

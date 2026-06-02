@@ -11,9 +11,9 @@ Both modes engage LVSA through `LVSA_*` environment variables — see [`../READM
 
 ## Prerequisites
 
-`vllm==0.18.0` pins `torch==2.10`, which is incompatible with the torch the
-standalone LVSA engine uses (`2.12`). **Use a separate venv for vllm-omni
-work** so it doesn't break the standalone engine in your main `.venv`.
+`vllm==0.22.0` pins `torch==2.11` (CUDA 13), which is incompatible with the
+torch the standalone LVSA engine uses (`2.12`). **Use a separate venv for
+vllm-omni work** so it doesn't break the standalone engine in your main `.venv`.
 
 ```bash
 # From the LVSA repo root:
@@ -22,19 +22,26 @@ source .venv-vllm/bin/activate
 
 uv pip install -e .                                # core lvsa
 uv pip install -e lvsa-vllm-omni/                  # this plugin
-uv pip install "vllm==0.18.0" "vllm-omni==0.18.0"  # validated pair
+
+# vllm 0.22.0 is on PyPI; vllm-omni 0.22.0rc1 is a pre-release NOT published to
+# PyPI, so build it from the git tag. Install vllm FIRST (vllm-omni does not
+# declare vllm as a dependency, so a lone vllm-omni install pulls no vllm).
+uv pip install "vllm==0.22.0"
+uv pip install --no-build-isolation \
+  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
 ```
 
 > **Two-venv rule**: keep `.venv` for standalone (`examples/wan_generate.py`,
 > CPU tests, benchmark scripts) and `.venv-vllm` for vllm-omni serving + the
-> scripts in this folder. The `.venv-vllm` torch is older (2.10), so
+> scripts in this folder. The `.venv-vllm` torch is 2.11 / CUDA 13, so
 > standalone GPU work that depends on torch 2.12 features won't run there.
 >
-> **Version pair**: `vllm` and `vllm-omni` minor versions must match.
-> Installing the latest of each (`pip install vllm vllm-omni`) will fetch
-> `0.21.x` and `0.20.x` respectively, which mismatch and emit a runtime
-> warning. The LVSA plugin is validated against the `0.18.0` pair, also
-> pinned in [`../Dockerfile`](../Dockerfile).
+> **Version pairing is asymmetric — do NOT version-match.** vllm-omni
+> 0.22.0rc1 rebases onto vllm **0.22.0 (stable)**, so the correct pair is
+> `vllm==0.22.0` + `vllm-omni==0.22.0rc1`. vllm-omni 0.22.0rc1 is not on PyPI;
+> it is built from the git tag (also pinned in [`../Dockerfile`](../Dockerfile)).
+> To stay on the older pip-installable line, use the `release/v0.18.x` branch
+> (`vllm==0.18.0` + `vllm-omni==0.18.0`).
 
 ## Online — server + HTTP client
 

@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+FROM nvidia/cuda:13.0.0-devel-ubuntu22.04
 
 WORKDIR /workdir
 
@@ -16,9 +16,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.22 /uv /uvx /bin/
 RUN --mount=type=cache,target=/root/.cache/uv \
         uv venv --python 3.12 /venv --seed
 
-# ── All from PyPI — no source compilation needed ──
+# ── Torch 2.11 / CUDA 13 (matches vllm 0.22.0's pin) ──
 RUN --mount=type=cache,target=/root/.cache/uv \
-        uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+        uv pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
+        --index-url https://download.pytorch.org/whl/cu130
 
 RUN --mount=type=cache,target=/root/.cache/uv \
         uv pip install ftfy imageio imageio-ffmpeg
@@ -40,9 +41,15 @@ RUN --mount=type=cache,target=/root/.cache/uv  \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-cache-dir "git+https://github.com/huggingface/diffusers.git@main#egg=diffusers[test]"
 
-# ── vllm-omni + vllm from PyPI (must pin matching versions) ──
+# ── vllm (PyPI) + vllm-omni (git pre-release) ──
+# Versions intentionally differ: vllm-omni 0.22.0rc1 rebases onto vllm 0.22.0.
+# vllm-omni 0.22.0rc1 is not published to PyPI, so build it from the git tag.
+# Install vllm first — vllm-omni does not declare vllm as a dependency.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install "vllm==0.18.0" "vllm-omni==0.18.0"
+    uv pip install "vllm==0.22.0"
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-build-isolation \
+    "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
 
 # ── NO flash_attn — torch SDPA dispatches to FA2 internally ──
 
@@ -52,10 +59,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install -e /workdir/code -e /workdir/code/lvsa-vllm-omni
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install "flashinfer-python==0.6.6" "flashinfer-cubin==0.6.6"
+    uv pip install "flashinfer-python==0.6.11.post2" "flashinfer-cubin==0.6.11.post2"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install "flashinfer-jit-cache==0.6.6" --index-url https://flashinfer.ai/whl/cu128
+    uv pip install "flashinfer-jit-cache==0.6.11.post2" --index-url https://flashinfer.ai/whl/cu130
 
 # LVSA registers via the `vllm_omni.general_plugins` entry point (pyproject.toml).
 # vllm-omni calls `load_omni_general_plugins()` in the main process, engine,

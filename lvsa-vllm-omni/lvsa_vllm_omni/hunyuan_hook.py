@@ -6,8 +6,7 @@ encoder streams are still separate. This is equivalent to what the standalone
 DistributedLVSAProcessor does.
 
 Usage: call ``install_hunyuan_lvsa_hook()`` after model loading in the worker process.
-This is triggered automatically when DIFFUSION_ATTENTION_BACKEND=LVSA and the model
-is HunyuanVideo.
+Triggered automatically by ``register_lvsa_backend()`` when ``LVSA_HUNYUAN_HOOK=1``.
 """
 
 import os
@@ -50,7 +49,17 @@ def _mask_log_should_fire(spec: str, step_idx: int, last_step: int) -> bool:
 
 
 class HunyuanLVSAState:
-    """Shared LVSA state across all hooked attention blocks."""
+    """Shared LVSA state across all hooked attention blocks.
+
+    Concurrency: state is intentionally shared across every block within a
+    generation — that's how step counting + metadata caching work. We do not
+    wrap it in ``threading.local()`` because every vllm-omni diffusion worker
+    is a single process running a single asyncio loop on one OS thread; the
+    warmup and every request hit this state sequentially. Thread-local
+    storage would also not help if vllm-omni later adds in-worker batching
+    (coroutines share the same OS thread) — that case would need a
+    request-scoped key.
+    """
 
     def __init__(self, config: LVSAConfig) -> None:
         self.config = config
@@ -203,8 +212,15 @@ def install_hunyuan_lvsa_hook(total_latent_frames: int) -> None:
         encoder_hidden_states: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         image_rotary_emb: tuple | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """LVSA-enhanced forward: sparse attention on video, dense on encoder."""
+        hidden_states_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """LVSA-enhanced forward: sparse attention on video, dense on encoder.
+
+        Signature mirrors vllm-omni 0.22 ``HunyuanVideo15Attention.forward``,
+        which added the ``hidden_states_mask`` argument (sequence-parallel
+        padding mask) and may return a single tensor when there is no encoder
+        stream.
+        """
 
         # ── Video QKV (same as original) ──
         qkv, _ = self.to_qkv(hidden_states)
@@ -330,34 +346,21 @@ def install_hunyuan_lvsa_hook(total_latent_frames: int) -> None:
 
             return hidden_states, encoder_hidden_states
         else:
-            # ── Dense path: original behavior ──
-            if encoder_hidden_states is not None:
-                query = torch.cat([query, encoder_query], dim=1)
-                key = torch.cat([key, encoder_key], dim=1)
-                value = torch.cat([value, encoder_value], dim=1)
-
-            attn_metadata = None
-            if attention_mask is not None:
-                from vllm_omni.diffusion.attention.backends.abstract import AttentionMetadata
-                seq_len = query.shape[1]
-                attention_mask = F.pad(attention_mask, (seq_len - attention_mask.shape[1], 0), value=True)
-                attention_mask = attention_mask.bool()
-                attn_metadata = AttentionMetadata(attn_mask=attention_mask)
-
-            out = self.attn(query, key, value, attn_metadata)
-            out = out.flatten(2, 3)
-            out = out.to(query.dtype)
-
-            if encoder_hidden_states is not None:
-                hidden_states, encoder_hidden_states = out.split_with_sizes(
-                    [out.shape[1] - encoder_hidden_states.shape[1], encoder_hidden_states.shape[1]], dim=1
-                )
-                hidden_states = self.to_out[0](hidden_states)
-                encoder_hidden_states = self.to_add_out(encoder_hidden_states)
-                return hidden_states, encoder_hidden_states
-            else:
-                out = self.to_out[0](out)
-                return out
+            # ── Dense fallback: delegate to the original forward ──
+            # Reached on warmup (geometry mismatch), when the encoder stream is
+            # absent, or under distributed SP. We re-run _orig_forward rather
+            # than reimplement the (now SP-aware) dense path: the QKV / RoPE
+            # work above becomes wasted, but this path is rare and delegating
+            # keeps us correct against vllm-omni 0.22's signature — including
+            # hidden_states_mask handling and the joint-attention metadata.
+            return _orig_forward(
+                self,
+                hidden_states,
+                encoder_hidden_states,
+                attention_mask,
+                image_rotary_emb,
+                hidden_states_mask,
+            )
 
     # Apply the monkey-patch
     HunyuanVideo15Attention.forward = _lvsa_forward

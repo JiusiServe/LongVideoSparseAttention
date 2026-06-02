@@ -26,9 +26,10 @@ DTYPE=${DTYPE:-bfloat16}
 TP=${TP:-1}
 
 # ── LVSA backend selection ───────────────────────────────────────────────────
-# HunyuanVideo auto-activates when DIFFUSION_ATTENTION_BACKEND=LVSA (no
-# explicit LVSA_HUNYUAN_HOOK needed — the generic backend path handles it).
-export DIFFUSION_ATTENTION_BACKEND=LVSA
+# vllm-omni 0.22 dropped the DIFFUSION_ATTENTION_BACKEND env var; the
+# `lvsa_vllm_omni.serve` wrapper below injects the per-role AttentionConfig
+# (--diffusion-attention-config) automatically. The hook drives the sparse
+# attention; LVSA_HUNYUAN_HOOK=1 keeps it active.
 export LVSA_HUNYUAN_HOOK=${LVSA_HUNYUAN_HOOK:-1}
 export LVSA_REFERENCE_LATENT_FRAMES=${LVSA_REFERENCE_LATENT_FRAMES:-33}
 export LVSA_TOTAL_LATENT_FRAMES=${LVSA_TOTAL_LATENT_FRAMES:-33}
@@ -50,9 +51,16 @@ fi
 
 echo "[serve_hunyuan] model=$MODEL_PATH port=$PORT dtype=$DTYPE tp=$TP python=$PYTHON_BIN"
 echo "[serve_hunyuan] LVSA env:"
-env | grep '^LVSA_\|DIFFUSION_ATTENTION_BACKEND' | sort
+env | grep '^LVSA_' | sort
+
+# --vae-use-tiling / --vae-use-slicing: HunyuanVideo 1.5's VAE decode OOMs at
+# longer clips (~65+ frames) on an 80 GB GPU without them — independent of LVSA
+# (the sparse attention completes; the dense VAE decode is the ceiling). They
+# are effectively lossless. Override VAE_OPT="" to disable.
+VAE_OPT=${VAE_OPT:---vae-use-tiling --vae-use-slicing}
 
 exec "$PYTHON_BIN" -m lvsa_vllm_omni.serve "$MODEL_PATH" \
     --port "$PORT" \
     --dtype "$DTYPE" \
-    --tensor-parallel-size "$TP"
+    --tensor-parallel-size "$TP" \
+    $VAE_OPT

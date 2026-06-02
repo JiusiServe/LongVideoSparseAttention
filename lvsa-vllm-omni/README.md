@@ -49,7 +49,9 @@ docker run --gpus all \
 
 - `lvsa>=0.1.0` (the core library)
 - `torch>=2.1.0`
-- `vllm==0.18.0`, `vllm-omni==0.18.0` (must match versions)
+- `vllm==0.22.0` (PyPI) + `vllm-omni==0.22.0rc1` (built from git; **not** on PyPI).
+  Versions intentionally differ — vllm-omni 0.22.0rc1 rebases onto vllm 0.22.0.
+  For the older pip-installable pair (`0.18.0`/`0.18.0`), use the `release/v0.18.x` branch.
 - Optional: `flashinfer-python>=0.2` (for FlashInfer LVSA backend)
 - `flash_attn` is **not required** — torch SDPA dispatches to Flash Attention v2 internally
 
@@ -65,14 +67,19 @@ python -m lvsa_vllm_omni.serve /models/Wan2.1-T2V-1.3B-Diffusers --port 8100
 
 This registers the LVSA backend and launches `vllm serve --omni` in one step. Works for both Wan and HunyuanVideo.
 
-### Option 2: Environment variable
+### Option 2: Explicit per-role AttentionConfig
 
 ```bash
-export DIFFUSION_ATTENTION_BACKEND=LVSA
-vllm serve /models/Wan2.1-T2V-1.3B-Diffusers --omni --port 8100
+vllm serve /models/Wan2.1-T2V-1.3B-Diffusers --omni --port 8100 \
+    --diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'
 ```
 
-Requires that `register_lvsa_backend()` has been called before model loading. The Docker image handles this automatically (see [Backend Registration](#backend-registration)).
+vllm-omni 0.22 selects the attention backend per role via `AttentionConfig`
+(the `DIFFUSION_ATTENTION_BACKEND` env var was removed). This requires that
+`register_lvsa_backend()` has been called before model loading — the entry
+point and Docker image handle that automatically (see
+[Backend Registration](#backend-registration)). The serve wrapper in Option 1
+injects this flag for you.
 
 ### Sending requests
 

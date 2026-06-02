@@ -2,6 +2,44 @@
 
 All notable changes to LVSA will be documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### vLLM-Omni plugin — upgraded to vllm-omni 0.22.0rc1
+
+The plugin now targets **vllm-omni 0.22.0rc1** (paired with **vllm 0.22.0**,
+torch 2.11 / CUDA 13). The previous `vllm-omni 0.18.0` line is maintained on the
+`release/v0.18.x` branch.
+
+**Breaking changes for users:**
+
+- **Backend selection moved to per-role `AttentionConfig`.** vllm-omni 0.22
+  removed the `DIFFUSION_ATTENTION_BACKEND` env var. Select LVSA per attention
+  role instead — on the CLI:
+  `--diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'`,
+  or via the Python API:
+  `Omni(..., diffusion_attention_config={"per_role": {"self": {"backend": "LVSA"}}})`.
+  The `python -m lvsa_vllm_omni.serve` wrapper and the `offline_*.py` /
+  `serve_*.sh` examples inject this for you.
+- **Install is asymmetric and source-built.** vllm-omni 0.22.0rc1 is a
+  pre-release not published to PyPI; install `vllm==0.22.0` from PyPI first,
+  then build vllm-omni from the git tag
+  (`vllm-omni @ git+…@v0.22.0rc1`). The versions intentionally differ.
+- **Both Docker images now build on `nvidia/cuda:13.0.0`** (torch 2.11/2.12,
+  flashinfer 0.6.11.post2).
+
+**Internal changes:**
+
+- `wan_hook.py`: `apply_rotary_emb_wan` (removed upstream) replaced by
+  `RotaryEmbeddingWan`; patched-forward signature updated to the new
+  `(hidden_states, rotary_emb, attn_metadata)`; dense fallback delegates to the
+  original forward.
+- `hunyuan_hook.py`: patched-forward gained `hidden_states_mask`; dense fallback
+  delegates to the original forward (SP-aware).
+- `attention_impl.py`: `LVSAAttentionImpl.__init__` accepts the new
+  `qkv_layout` / `backend_kwargs` parameters.
+- Enum registration via `aenum.extend_enum` continues to work against the 0.22
+  `DiffusionAttentionBackendEnum`.
+
 ## [1.0.0] — 2026-05-27
 
 Initial public release.

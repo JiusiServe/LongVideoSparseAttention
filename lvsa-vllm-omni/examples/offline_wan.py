@@ -115,7 +115,6 @@ def main():
     # ── LVSA env-var setup (must happen BEFORE vllm_omni import) ────────────
     # The plugin hooks read these at module import / class instantiation time.
     if not args.no_lvsa:
-        os.environ["DIFFUSION_ATTENTION_BACKEND"] = "LVSA"
         os.environ["LVSA_WAN_HOOK"] = "1"
         # Latent-frame count for Wan: (num_frames - 1) // 4 + 1
         t_lat = (args.num_frames - 1) // 4 + 1
@@ -134,11 +133,21 @@ def main():
     from vllm_omni.inputs.data import OmniDiffusionSamplingParams
     from diffusers.utils import export_to_video
 
+    # vllm-omni 0.22 selects the attention backend per role via AttentionConfig
+    # (replacing the old DIFFUSION_ATTENTION_BACKEND env var). Route the
+    # self-attention role to LVSA; cross-attention keeps the platform default.
+    omni_kwargs = {}
+    if not args.no_lvsa:
+        omni_kwargs["diffusion_attention_config"] = {
+            "per_role": {"self": {"backend": "LVSA"}}
+        }
+
     print(f"[offline_wan] loading {args.model} (tp={args.tensor_parallel_size}, dtype={args.dtype})")
     omni = Omni(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
         dtype=args.dtype,
+        **omni_kwargs,
     )
     try:
         print(f"[offline_wan] generating {args.num_frames} frames at {args.width}x{args.height}")

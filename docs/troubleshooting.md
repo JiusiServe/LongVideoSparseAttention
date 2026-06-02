@@ -15,7 +15,7 @@ Look for `[LVSA-FALLBACK]` warnings in the log:
 [LVSA-FALLBACK] origin=forward_cuda reason=no_t_lat seq_len=…
 ```
 
-If you see no `[LVSA]` lines at all, the backend wasn't selected — check `DIFFUSION_ATTENTION_BACKEND=LVSA`.
+If you see no `[LVSA]` lines at all, the backend wasn't selected — for vllm-omni 0.22 check that `--diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'` is passed (the `python -m lvsa_vllm_omni.serve` wrapper injects it; the `DIFFUSION_ATTENTION_BACKEND` env var was removed in 0.22).
 
 If you see backend selection but no per-block engagement on Wan, check `LVSA_WAN_HOOK=1` (required for Wan; without it Wan's `_sp_plan` pre-shards the sequence and geometry detection fails silently).
 
@@ -27,13 +27,28 @@ For non-default resolutions, also set the geometry env vars: `LVSA_PATCHES_PER_F
 
 ## Symptom 2 — OOM at long sequences (T_lat ≥ 65 on 80 GB GPU)
 
-**Root cause**: the **VAE decode** (not attention) is what blew up memory. LVSA reduces attention to ~50% of dense at 2× horizon, but the VAE then has to decode all those latent frames at once, which on HunyuanVideo at 257 video frames exceeds 80 GB even with `enable_vae_tiling()`.
+**Root cause**: the **VAE decode** (not attention) is what blew up memory. LVSA reduces attention, but the VAE then has to decode all those latent frames back to pixels at once. On HunyuanVideo 1.5 (480p) this OOMs at ~65+ video frames on an 80 GB GPU — the dense VAE decode is the ceiling, not LVSA (the sparse attention forward completes cleanly first).
 
 ### Diagnosis
 
-The OOM trace points at `vae.decode` or `unsqueeze` inside the VAE. The attention forward will have completed cleanly.
+The OOM trace points at `vae.decode` / the VAE decoder's `up_block` (e.g. `pipeline_hunyuan_video_1_5.py … self.vae.decode(…)`). The attention forward and the whole denoising loop will have completed.
 
-### Fix
+### Fix (vLLM-Omni)
+
+**Enable VAE tiling + slicing** — they decode the latents in chunks and are effectively lossless. With them, HunyuanVideo 1.5 runs at **129 frames (reference length) on a single 80 GB A100** with LVSA. This is the default in `offline_hunyuan.py` and `serve_hunyuan.sh`; if you call the Python API directly:
+
+```python
+Omni(
+    model="/models/HunyuanVideo-1.5-Diffusers-480p_t2v",
+    diffusion_attention_config={"per_role": {"self": {"backend": "LVSA"}}},
+    vae_use_tiling=True,
+    vae_use_slicing=True,
+)
+```
+
+On the serve CLI, pass `--vae-use-tiling --vae-use-slicing` (the `serve_hunyuan.sh` wrapper adds them by default). For very long horizons that still exceed memory, add `enable_cpu_offload=True`.
+
+### Fix (standalone, alternative)
 
 Use `--output-latent` (standalone) or `output_type="latent"` (vLLM-Omni Python API) to skip VAE decode and save the denoised latent tensor to a `.pt` file. Decode it offline on a higher-memory GPU.
 
