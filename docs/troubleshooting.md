@@ -8,7 +8,21 @@ LVSA's failure modes are mostly **silent**: the run completes, an mp4 is produce
 
 ### Diagnosis
 
-Look for `[LVSA-FALLBACK]` warnings in the log:
+**First, confirm engagement.** On the first geometry-matched generation forward, the hooks print a one-time, default-on confirmation:
+
+```
+[LVSA] engaged (wan): T_lat=21 P=1560 seq_len=32760 kfi=1 W=3 |G|=21 -> DENSE (T_lat <= ref)
+[LVSA] engaged (hunyuan): T_lat=49 P=1560 seq_len=76440 kfi=2 W=3 |G|=25 -> SPARSE
+```
+
+This distinguishes three states that otherwise look identical:
+- **`-> SPARSE`** (kfi > 1, horizon above the training reference) — LVSA is doing real work.
+- **`-> DENSE (T_lat <= ref)`** — LVSA engaged but is intentionally dense at/below the reference horizon (kfi=1). Expect no speedup here; that's correct, not a bug.
+- **No `[LVSA] engaged` line at all** — the sparse path never ran for generation. The line is deduped per generation, so it appears once; the `[LVSA-FALLBACK]` you see at the small warmup `seq_len` (e.g. 1024) is the dummy run, not generation.
+
+For per-step sparsity detail (keyframe grid, attended budget), set `LVSA_MASK_LOG=once` (or `=1`).
+
+Then look for `[LVSA-FALLBACK]` warnings during the *generation* steps (not warmup):
 
 ```
 [LVSA-FALLBACK] origin=forward_cuda reason=geometry_detect seq_len=25740 known_ppf=[1560]

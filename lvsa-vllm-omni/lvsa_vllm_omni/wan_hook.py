@@ -26,7 +26,7 @@ from ._fallback import warn_fallback
 
 
 # Reuse HunyuanLVSAState — it is model-agnostic (step tracking, metadata cache).
-from .hunyuan_hook import HunyuanLVSAState, _mask_log_should_fire
+from .hunyuan_hook import HunyuanLVSAState, _mask_log_should_fire, _log_engagement_once
 from .global_kv import build_global_kv
 
 
@@ -114,6 +114,7 @@ def install_wan_lvsa_hook(total_latent_frames: int) -> None:
             metadata = state.get_metadata(
                 total_latent_frames, P, step_idx, query.device,
             )
+            _log_engagement_once(state, "wan", total_latent_frames, P, full_seq, metadata)
 
             # Opt-in compact attention-mask log (LVSA_MASK_LOG env).
             mask_spec = os.environ.get("LVSA_MASK_LOG", "")

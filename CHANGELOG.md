@@ -2,7 +2,7 @@
 
 All notable changes to LVSA will be documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] — 2026-06-02
 
 ### vLLM-Omni plugin — upgraded to vllm-omni 0.22.0rc1
 
@@ -87,4 +87,5 @@ Initial public release.
 - CPU-only test suite covering windowed attention primitives, processor wiring, adapter contracts, device-detection helpers, RoPE math, RIFLEx, and the `reference_frames` propagation invariants.
 - VQeval test suite at `vqeval/tests/`.
 
+[1.1.0]: https://github.com/JiusiServe/LongVideoSparseAttention/releases/tag/v1.1.0
 [1.0.0]: https://github.com/JiusiServe/LongVideoSparseAttention/releases/tag/v1.0.0

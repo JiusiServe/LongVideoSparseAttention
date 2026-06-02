@@ -215,20 +215,51 @@ class TestComputeAutoKfi:
 # ── WanDistributedLVSAProcessor.__init__ ──────────────────────────────────────
 
 
+def _make_processor(T=21, P=30, W=3, n_first=3, kfi=4, rank=0, world=1):
+    """Helper to create a processor with typical parameters."""
+    return WanDistributedLVSAProcessor(
+        total_num_latent_frames=T,
+        num_patches=P,
+        window_size=W,
+        n_first_frames=n_first,
+        key_frame_interval=kfi,
+        rank=rank,
+        world=world,
+    )
+
+
+class TestGeometryGuard:
+    """The __call__ geometry guard: LVSA must only engage when the runtime
+    sequence is the expected frame grid (local_seq × world == T × P), else it
+    falls back to dense attention rather than silently misaligning."""
+
+    def test_matches_exact_single_gpu(self):
+        proc = _make_processor(T=21, P=30, world=1)
+        assert proc._geometry_matches(21 * 30) is True
+
+    def test_mismatch_extra_tokens(self):
+        # Prepended history / non-frame-structured layout → extra tokens.
+        proc = _make_processor(T=21, P=30, world=1)
+        assert proc._geometry_matches(21 * 30 + 100) is False
+
+    def test_matches_multi_gpu_shard(self):
+        # CP: per-rank local_seq = T*P // world.
+        proc = _make_processor(T=20, P=30, world=2)
+        assert proc._geometry_matches(20 * 30 // 2) is True
+        assert proc._geometry_matches(20 * 30) is False  # full seq on a sharded rank
+
+    def test_helios_like_mismatch(self):
+        # Helios empirically: configured 33*960, runtime 11040 (history+chunk).
+        proc = _make_processor(T=33, P=960, world=1)
+        assert proc._geometry_matches(33 * 960) is True
+        assert proc._geometry_matches(11040) is False
+
+
 class TestProcessorInit:
     """Tests for processor initialization and derived data structures."""
 
     def _make_processor(self, T=21, P=30, W=3, n_first=3, kfi=4, rank=0, world=1):
-        """Helper to create a processor with typical parameters."""
-        return WanDistributedLVSAProcessor(
-            total_num_latent_frames=T,
-            num_patches=P,
-            window_size=W,
-            n_first_frames=n_first,
-            key_frame_interval=kfi,
-            rank=rank,
-            world=world,
-        )
+        return _make_processor(T=T, P=P, W=W, n_first=n_first, kfi=kfi, rank=rank, world=world)
 
     def test_local_seq_computation(self):
         T, P, world = 21, 30, 1

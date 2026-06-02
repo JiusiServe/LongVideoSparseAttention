@@ -48,6 +48,29 @@ def _mask_log_should_fire(spec: str, step_idx: int, last_step: int) -> bool:
         return False
 
 
+def _log_engagement_once(state, model, total_latent_frames, num_patches, seq_len, metadata):
+    """Print a one-time positive confirmation that LVSA actually engaged for
+    generation (geometry matched, not a warmup fallback).
+
+    Default-on, deduped per generation via ``state._engaged_logged`` (reset on
+    seq_len change in ``tick``). Distinguishes engaged-and-sparse (kfi>1, above
+    reference) from engaged-but-dense (kfi==1, at/below reference) — neither of
+    which was visible before, since the LVSA path only logged the opt-in
+    ``LVSA_MASK_LOG``. Silence here, with a ``[LVSA-FALLBACK]`` only at the
+    warmup seq_len, now means "engaged for every generation step"."""
+    if state._engaged_logged:
+        return
+    state._engaged_logged = True
+    kfi = metadata.key_frame_interval
+    mode = "SPARSE" if kfi > 1 else "DENSE (T_lat <= ref)"
+    print(
+        f"[LVSA] engaged ({model}): T_lat={total_latent_frames} P={num_patches} "
+        f"seq_len={seq_len} kfi={kfi} W={metadata.window_size} "
+        f"|G|={len(metadata.global_set)} -> {mode}",
+        flush=True,
+    )
+
+
 class HunyuanLVSAState:
     """Shared LVSA state across all hooked attention blocks.
 
@@ -77,6 +100,8 @@ class HunyuanLVSAState:
         self._generation_seq_len: Optional[int] = None
         self._last_step_time: Optional[float] = None
         self._mask_log_last_step: int = -1
+        # One-time positive engagement log per generation (reset on seq_len change).
+        self._engaged_logged: bool = False
 
     def tick(self, layer_id: int, seq_len: int) -> int:
         """Track denoising step by counting self-attention calls.
@@ -87,6 +112,7 @@ class HunyuanLVSAState:
             self._call_count = 0
             self._step = 0
             self._seen_ids.clear()
+            self._engaged_logged = False
 
         if self._generation_seq_len is None:
             self._generation_seq_len = seq_len
@@ -296,6 +322,7 @@ def install_hunyuan_lvsa_hook(total_latent_frames: int) -> None:
             P = video_seq // total_latent_frames
 
             metadata = state.get_metadata(total_latent_frames, P, step_idx, query.device)
+            _log_engagement_once(state, "hunyuan", total_latent_frames, P, video_seq, metadata)
 
             # Opt-in compact attention-mask log (LVSA_MASK_LOG env). Dedups
             # across attention blocks via state._mask_log_last_step so we

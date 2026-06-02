@@ -8,7 +8,7 @@
       "name": "lvsa-quickstart",
       "source": "./skills/lvsa-quickstart",
       "description": "Install LVSA and generate your first long video. Picks SDPA vs FlashInfer, sets the right LVSA_REFERENCE_LATENT_FRAMES per model, verifies the sparse path engaged.",
-      "version": "1.0.0"
+      "version": "1.1.0"
     },
     {
       "name": "lvsa-tuning",
@@ -20,7 +20,7 @@
       "name": "lvsa-troubleshooting",
       "source": "./skills/lvsa-troubleshooting",
       "description": "Diagnose LVSA failure modes: silent dense fallback, OOM at long sequences, missing output mp4 in Docker, quality regression at training reference.",
-      "version": "1.0.0"
+      "version": "1.1.0"
     },
     {
       "name": "lvsa-add-model",
@@ -32,7 +32,7 @@
       "name": "lvsa-vllm-omni",
       "source": "./skills/lvsa-vllm-omni",
       "description": "Configure and run the LVSA vllm-omni serving plugin: env vars, geometry overrides, hooks for Wan vs HunyuanVideo, multi-GPU Ulysses.",
-      "version": "1.0.0"
+      "version": "1.1.0"
     },
     {
       "name": "lvsa-reproduce-paper",
