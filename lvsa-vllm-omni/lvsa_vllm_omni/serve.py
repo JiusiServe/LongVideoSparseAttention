@@ -32,13 +32,18 @@ def main():
     # Select LVSA for the self-attention role (vllm-omni 0.22 replaced the
     # DIFFUSION_ATTENTION_BACKEND env var with the per-role AttentionConfig).
     # Skip if the user already passed their own attention-backend flag.
+    # Match the bare flag, the value-attached ``=`` form, and the dotted
+    # per-key form (e.g. ``--diffusion-attention-config.per_role...``) for each
+    # spelling, so we don't append a second config that clobbers theirs.
+    _attn_flag_prefixes = (
+        "--diffusion-attention-config",
+        "--diffusion-attention-backend",
+        "-dac",
+    )
     _has_attn_flag = any(
-        a == "--diffusion-attention-config"
-        or a == "-dac"
-        or a == "--diffusion-attention-backend"
-        or a.startswith("--diffusion-attention-config.")
-        or a.startswith("--diffusion-attention-backend")
+        a == p or a.startswith(p + "=") or a.startswith(p + ".")
         for a in sys.argv
+        for p in _attn_flag_prefixes
     )
     if not _has_attn_flag:
         sys.argv += [

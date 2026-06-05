@@ -19,7 +19,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # torch 2.12 / CUDA 13 (base image is cuda:13.0.0). The package itself declares
 # torch>=2.1.0 in pyproject.toml; this Docker image ships a specific
 # CUDA-matched build. torchaudio is omitted — the video engine does not use it
-# and it has no cu130 build matching torch 2.12.
+# and it has no cu130 build matching torch 2.12 (the only torch-2.12 torchaudio
+# is cu128, which mismatches a cu130 torch at import).
+#
+# NOTE: this standalone image intentionally pins torch 2.12 (latest diffusers
+# stack). The plugin image (lvsa-vllm-omni/Dockerfile) pins torch 2.11 +
+# torchaudio 2.11 instead — vllm-omni 0.22 requires torch 2.11. The two images
+# are independent venvs; the version difference is deliberate, not a typo.
 RUN --mount=type=cache,target=/root/.cache/uv \
         uv pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cu130
 

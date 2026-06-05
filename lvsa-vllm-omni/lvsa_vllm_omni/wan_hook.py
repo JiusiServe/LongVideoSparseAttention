@@ -62,6 +62,51 @@ def install_wan_lvsa_hook(total_latent_frames: int) -> None:
         ``attn_mask`` tensor in 0.18).
         """
 
+        local_seq = hidden_states.shape[1]
+        full_seq = local_seq  # Single-rank assumption (no Ring SP in this release).
+
+        # ── Step tracking ──
+        # Ticked on every forward (including fallbacks) so the per-module step
+        # cadence is identical to before this early-return guard was added.
+        step_idx = state.tick(id(self), local_seq)
+
+        # ── Distributed CP guard ──
+        # Under Ulysses / Ring SP, the sequence dimension is sharded across
+        # ranks before this forward runs. ``local_seq`` no longer equals the
+        # full T_lat × P, so the LVSA geometry detection would silently match
+        # the wrong P. Fall back to dense — a per-rank LVSA pattern is not
+        # supported in this release.
+        try:
+            import torch.distributed as _dist
+            _is_distributed = _dist.is_initialized() and _dist.get_world_size() > 1
+        except Exception:
+            _is_distributed = False
+
+        # ── Geometry check BEFORE any projection ──
+        # Doing this first avoids wasting QKV / QK-norm / RoPE compute on warmup
+        # (small seq) or distributed runs that are guaranteed to fall back.
+        # full_seq must equal T_lat * P (no encoder tokens in Wan self-attn).
+        geometry_ok = (
+            total_latent_frames > 0
+            and full_seq % total_latent_frames == 0
+            and not _is_distributed
+        )
+
+        if not geometry_ok:
+            warn_fallback(
+                origin="wan_hook",
+                reason="distributed_cp" if _is_distributed else "geometry_mismatch",
+                seq_len=local_seq,
+                extra={"T_lat": total_latent_frames, "full_seq": full_seq,
+                       "distributed": _is_distributed},
+            )
+            # Delegate to the original (dense) forward rather than reimplement
+            # the attention call — keeps us correct against vllm-omni's evolving
+            # signature (it builds its own AttentionMetadata from the padding).
+            return _orig_forward(self, hidden_states, rotary_emb, attn_metadata)
+
+        P = full_seq // total_latent_frames
+
         # ── QKV projection on the (possibly sharded) local seq ──
         qkv, _ = self.to_qkv(hidden_states)
         q_size = self.num_heads * self.head_dim
@@ -83,86 +128,40 @@ def install_wan_lvsa_hook(total_latent_frames: int) -> None:
             query = wan_rope(query, freqs_cos, freqs_sin)
             key = wan_rope(key, freqs_cos, freqs_sin)
 
-        local_seq = query.shape[1]
-        full_seq = local_seq  # Single-rank assumption (no Ring SP in this release).
-
-        # ── Step tracking ──
-        step_idx = state.tick(id(self), local_seq)
-
-        # ── Distributed CP guard ──
-        # Under Ulysses / Ring SP, the sequence dimension is sharded across
-        # ranks before this forward runs. ``local_seq`` no longer equals the
-        # full T_lat × P, so the LVSA geometry detection would silently match
-        # the wrong P. Fall back to dense — a per-rank LVSA pattern is not
-        # supported in this release.
-        try:
-            import torch.distributed as _dist
-            _is_distributed = _dist.is_initialized() and _dist.get_world_size() > 1
-        except Exception:
-            _is_distributed = False
-
-        # ── Geometry check ──
-        # full_seq must equal T_lat * P (no encoder tokens in Wan self-attn).
-        geometry_ok = (
-            total_latent_frames > 0
-            and full_seq % total_latent_frames == 0
-            and not _is_distributed
+        metadata = state.get_metadata(
+            total_latent_frames, P, step_idx, query.device,
         )
-        P = full_seq // total_latent_frames if geometry_ok else -1
+        _log_engagement_once(state, "wan", total_latent_frames, P, full_seq, metadata)
 
-        if geometry_ok:
-            metadata = state.get_metadata(
-                total_latent_frames, P, step_idx, query.device,
+        # Opt-in compact attention-mask log (LVSA_MASK_LOG env).
+        mask_spec = os.environ.get("LVSA_MASK_LOG", "")
+        if _mask_log_should_fire(mask_spec, step_idx, state._mask_log_last_step):
+            from lvsa.sparse_attention import print_attention_mask_compact
+            state._mask_log_last_step = step_idx
+            print(
+                f"[LVSA-MASK] step={step_idx}  T_lat={total_latent_frames}  "
+                f"W={metadata.window_size}  |G|={len(metadata.global_set)}  "
+                f"kfi={metadata.key_frame_interval}",
+                flush=True,
             )
-            _log_engagement_once(state, "wan", total_latent_frames, P, full_seq, metadata)
-
-            # Opt-in compact attention-mask log (LVSA_MASK_LOG env).
-            mask_spec = os.environ.get("LVSA_MASK_LOG", "")
-            if _mask_log_should_fire(mask_spec, step_idx, state._mask_log_last_step):
-                from lvsa.sparse_attention import print_attention_mask_compact
-                state._mask_log_last_step = step_idx
-                print(
-                    f"[LVSA-MASK] step={step_idx}  T_lat={total_latent_frames}  "
-                    f"W={metadata.window_size}  |G|={len(metadata.global_set)}  "
-                    f"kfi={metadata.key_frame_interval}",
-                    flush=True,
-                )
-                print_attention_mask_compact(
-                    total_frames=total_latent_frames,
-                    window_size=metadata.window_size,
-                    global_set=metadata.global_set,
-                    expand_window=metadata.expand_window,
-                )
-
-            k_global, v_global = build_global_kv(
-                key, value, metadata.global_indices, P,
-            )
-            out_local = lvsa_sdpa(
-                query, key, value, k_global, v_global, metadata,
+            print_attention_mask_compact(
+                total_frames=total_latent_frames,
+                window_size=metadata.window_size,
+                global_set=metadata.global_set,
+                expand_window=metadata.expand_window,
             )
 
-            out_local = out_local.flatten(2, 3).type_as(query)
-            out_local = self.to_out(out_local)
-            out_local = self.dropout(out_local)
-            return out_local
+        k_global, v_global = build_global_kv(
+            key, value, metadata.global_indices, P,
+        )
+        out_local = lvsa_sdpa(
+            query, key, value, k_global, v_global, metadata,
+        )
 
-        # ── Dense fallback ──
-        if not geometry_ok:
-            warn_fallback(
-                origin="wan_hook",
-                reason="distributed_cp" if _is_distributed else "geometry_mismatch",
-                seq_len=local_seq,
-                extra={"T_lat": total_latent_frames, "full_seq": full_seq,
-                       "distributed": _is_distributed},
-            )
-
-        # Fall back to the original (dense) forward. We re-run the full
-        # _orig_forward rather than reimplement the attention call: the QKV
-        # projection above becomes wasted work, but this path is rare (warmup /
-        # pre-sharded / distributed), and delegating keeps us correct against
-        # vllm-omni's evolving forward signature (it now builds its own
-        # AttentionMetadata internally from the sequence padding).
-        return _orig_forward(self, hidden_states, rotary_emb, attn_metadata)
+        out_local = out_local.flatten(2, 3).type_as(query)
+        out_local = self.to_out(out_local)
+        out_local = self.dropout(out_local)
+        return out_local
 
     # Apply the monkey-patch
     WanSelfAttention.forward = _lvsa_forward

@@ -557,6 +557,22 @@ class DistributedLVSAProcessor:
             # shared encoder-query / cross-attn / output / format tail below is
             # identical for both paths, so a fallback here is correct dense
             # attention — just without LVSA's sparsity.
+            #
+            # This path uses the LOCAL key/value only. Under context parallelism
+            # (world > 1) the local shard is not the full sequence, so per-rank
+            # dense attention would be silently incorrect. LVSA + CP requires the
+            # clean T_lat × P frame grid; a geometry mismatch under CP is an
+            # unsupported layout, not a recoverable single-rank fallback — so
+            # fail loudly rather than emit per-shard output. (The plugin hooks'
+            # equivalent path delegates to vllm-omni's SP-aware forward; the
+            # standalone processor has no such delegate.)
+            if self.world > 1:
+                raise NotImplementedError(
+                    f"LVSA dense fallback under context parallelism is unsupported "
+                    f"(geometry mismatch: local_seq={local_seq}, world={self.world}). "
+                    f"The local shard is not the full sequence — run single-rank, or "
+                    f"use a layout whose sequence is a clean T_lat x P frame grid."
+                )
             self._warn_geometry_mismatch_once(local_seq)
             if enc_k is not None:
                 full_k = torch.cat([key, enc_k], dim=1)
