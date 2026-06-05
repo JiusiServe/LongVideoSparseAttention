@@ -35,6 +35,15 @@ class _StepCounter:
 
     Auto-calibrates n_blocks by detecting when the same layer ID repeats.
     Resets when seq_len changes (new generation or warmup→real transition).
+
+    Concurrency: state is intentionally shared across all attention blocks
+    within one generation — the *whole point* is to observe a single shared
+    counter. We do not protect it with ``threading.local()`` because every
+    vllm-omni diffusion worker is a single process and routes requests
+    through a single asyncio loop (one OS thread); the warmup and every
+    user request hit this counter sequentially. ``threading.local()`` would
+    also not help future in-worker batching (coroutines share an OS thread)
+    — that scenario would need a request-scoped key.
     """
 
     def __init__(self) -> None:
@@ -159,6 +168,9 @@ from .config import candidate_patches_per_frame as _ppf_candidates
 # Module-level dedup for LVSA_MASK_LOG: print the compact mask once per step
 # boundary, not once per attention layer. Reset whenever the step counter is
 # reset (new generation request, warmup→real transition).
+#
+# Concurrency: see _StepCounter docstring — single-process, single-thread
+# vllm-omni worker; the dedup is supposed to be shared across all blocks.
 _mask_log_last_step: int = -1
 
 
@@ -222,12 +234,20 @@ class LVSAAttentionImpl:
         causal: bool = False,
         num_kv_heads: Optional[int] = None,
         prefix: str = "",
+        qkv_layout: Optional[str] = None,
+        backend_kwargs: Optional[dict] = None,
         **extra_impl_args: Any,
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
         self.softmax_scale = softmax_scale
         self.num_kv_heads = num_kv_heads or num_heads
+        # vllm-omni 0.22 passes these two to every AttentionImpl (by keyword,
+        # from diffusion/attention/layer.py). ``backend_kwargs`` carries the
+        # per-role ``AttentionSpec.extra`` dict, available for future per-role
+        # LVSA overrides; today LVSA config is sourced from LVSA_* env vars.
+        self.qkv_layout = qkv_layout
+        self.backend_kwargs = backend_kwargs or {}
         self.config = LVSAConfig.from_env()
 
         self._lvsa_metadata: Optional[LVSAMetadata] = None

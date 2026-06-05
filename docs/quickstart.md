@@ -60,22 +60,21 @@ This path uses the LVSA plugin inside [vLLM-Omni](https://github.com/vllm-projec
 ```bash
 docker run --rm --gpus '"device=0"' --ipc=host --shm-size=2g \
     -v /path/to/models:/models \
-    -e DIFFUSION_ATTENTION_BACKEND=LVSA \
-    -e LVSA_AUTO_KEYFRAMES=1 \
-    -e LVSA_REFERENCE_LATENT_FRAMES=33 \
     lvsa-vllm-omni:latest \
-    python lvsa-vllm-omni/scripts/gen_hunyuan.py \
+    python lvsa-vllm-omni/examples/offline_hunyuan.py \
         --model /models/HunyuanVideo-1.5-Diffusers-480p_t2v \
         --num-frames 129 --steps 50 \
         --prompt "A dog running in the forest." \
         --output-name benchmarks/hv_1x.mp4
 ```
 
-The four required env vars:
-- `DIFFUSION_ATTENTION_BACKEND=LVSA` — selects the LVSA backend in vLLM-Omni
+`offline_hunyuan.py` engages LVSA for you: it sets `LVSA_HUNYUAN_HOOK=1` and
+the per-role `diffusion_attention_config` ( `{"per_role": {"self": {"backend":
+"LVSA"}}}` ) on the `Omni(...)` call. Under the hood the key settings are:
+- per-role AttentionConfig selecting `LVSA` for the self-attention role
+  (vllm-omni 0.22 replaced the `DIFFUSION_ATTENTION_BACKEND` env var)
 - `LVSA_AUTO_KEYFRAMES=1` — auto-derive the keyframe interval
 - `LVSA_REFERENCE_LATENT_FRAMES=33` — model's training horizon in latent frames (33 for HunyuanVideo, 21 for Wan, 13 for CogVideoX)
-- *(implicit: `LVSA_SCHEDULE_START=0 LVSA_SCHEDULE_END=0`)* — defaults
 
 For Wan, also set `LVSA_WAN_HOOK=1` and `LVSA_REFERENCE_LATENT_FRAMES=21`.
 

@@ -64,7 +64,11 @@ pip install -e .
 
 # vLLM-Omni plugin (optional — for serving)
 pip install -e lvsa-vllm-omni/
-pip install "vllm==0.18.0" "vllm-omni==0.18.0"   # validated pair
+# vllm-omni 0.22.0rc1 is a pre-release (not on PyPI) — build it from git.
+# Versions intentionally differ: vllm-omni 0.22.0rc1 rebases onto vllm 0.22.0.
+pip install "vllm==0.22.0"
+pip install --no-build-isolation \
+  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
 
 # VQeval (optional — for evaluating generated videos)
 pip install -e vqeval/
@@ -90,11 +94,8 @@ python examples/wan_generate.py \
 ```bash
 docker run --gpus '"device=0"' --ipc=host --shm-size=2g \
     -v /path/to/models:/models \
-    -e DIFFUSION_ATTENTION_BACKEND=LVSA \
-    -e LVSA_AUTO_KEYFRAMES=1 \
-    -e LVSA_REFERENCE_LATENT_FRAMES=33 \
     lvsa-vllm-omni:latest \
-    python lvsa-vllm-omni/scripts/gen_hunyuan.py \
+    python lvsa-vllm-omni/examples/offline_hunyuan.py \
         --model /models/HunyuanVideo-1.5-Diffusers-480p_t2v \
         --num-frames 193 \
         --prompt "Ocean waves crashing on a rocky coastline." \

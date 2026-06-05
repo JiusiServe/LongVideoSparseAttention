@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+FROM nvidia/cuda:13.0.0-devel-ubuntu22.04
 
 WORKDIR /workdir
 
@@ -16,11 +16,18 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.22 /uv /uvx /bin/
 RUN --mount=type=cache,target=/root/.cache/uv \
         uv venv --python 3.12 /venv --seed
 
-# torch pinned to 2.8.x for CUDA 12.8 compatibility (base image is cuda:12.8.0).
-# The package itself declares torch>=2.1.0 in pyproject.toml; this Docker image
-# ships a specific CUDA-matched build.
+# torch 2.12 / CUDA 13 (base image is cuda:13.0.0). The package itself declares
+# torch>=2.1.0 in pyproject.toml; this Docker image ships a specific
+# CUDA-matched build. torchaudio is omitted — the video engine does not use it
+# and it has no cu130 build matching torch 2.12 (the only torch-2.12 torchaudio
+# is cu128, which mismatches a cu130 torch at import).
+#
+# NOTE: this standalone image intentionally pins torch 2.12 (latest diffusers
+# stack). The plugin image (lvsa-vllm-omni/Dockerfile) pins torch 2.11 +
+# torchaudio 2.11 instead — vllm-omni 0.22 requires torch 2.11. The two images
+# are independent venvs; the version difference is deliberate, not a typo.
 RUN --mount=type=cache,target=/root/.cache/uv \
-        uv pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+        uv pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cu130
 
 RUN --mount=type=cache,target=/root/.cache/uv \
         uv pip install ftfy imageio imageio-ffmpeg
@@ -58,6 +65,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install flashinfer-python flashinfer-cubin
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install flashinfer-jit-cache --index-url https://flashinfer.ai/whl/cu128
+    uv pip install flashinfer-jit-cache --index-url https://flashinfer.ai/whl/cu130
 
 RUN echo 'source /venv/bin/activate' >> /root/.bashrc

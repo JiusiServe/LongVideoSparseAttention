@@ -16,34 +16,43 @@ Path: [`lvsa-vllm-omni/`](../../lvsa-vllm-omni/)
 ```bash
 pip install -e .                  # LVSA core
 pip install -e lvsa-vllm-omni/    # The plugin (registers entry-point)
-pip install "vllm==0.18.0" "vllm-omni==0.18.0"   # validated pair (mismatched minor versions emit warnings)
+# vllm 0.22.0 is on PyPI; vllm-omni 0.22.0rc1 is a pre-release built from git
+# (NOT on PyPI). Versions intentionally differ — vllm-omni 0.22.0rc1 rebases
+# onto vllm 0.22.0. Use a separate venv (torch 2.11 / CUDA 13).
+pip install "vllm==0.22.0"
+pip install --no-build-isolation \
+  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
 ```
 
-After install, the plugin auto-loads when vllm-omni starts.
+After install, the plugin auto-loads when vllm-omni starts. For the older
+pip-installable `0.18.0`/`0.18.0` pair, use the `release/v0.18.x` branch.
 
 ## Enable for a model
 
 ### HunyuanVideo 1.5
 
 ```bash
-DIFFUSION_ATTENTION_BACKEND=LVSA \
+LVSA_HUNYUAN_HOOK=1 \
 LVSA_AUTO_KEYFRAMES=1 \
 LVSA_REFERENCE_LATENT_FRAMES=33 \
 LVSA_ROTATE_KEYFRAMES=1 \
-vllm serve --omni --model HunyuanVideo-1.5-Diffusers-480p_t2v
+vllm serve --omni --model HunyuanVideo-1.5-Diffusers-480p_t2v \
+  --diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'
 ```
 
-HunyuanVideo's hook auto-activates when `DIFFUSION_ATTENTION_BACKEND=LVSA`.
+vllm-omni 0.22 selects the backend per role via `--diffusion-attention-config`
+(the `DIFFUSION_ATTENTION_BACKEND` env var was removed). `python -m
+lvsa_vllm_omni.serve` injects that flag for you.
 
 ### Wan 2.x
 
 ```bash
-DIFFUSION_ATTENTION_BACKEND=LVSA \
 LVSA_WAN_HOOK=1 \
 LVSA_AUTO_KEYFRAMES=1 \
 LVSA_REFERENCE_LATENT_FRAMES=21 \
 LVSA_ROTATE_KEYFRAMES=1 \
-vllm serve --omni --model Wan2.2-T2V-14B
+vllm serve --omni --model Wan2.2-T2V-14B \
+  --diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'
 ```
 
 Wan requires `LVSA_WAN_HOOK=1` explicitly. Without it, Wan's `_sp_plan` pre-shards the sequence and geometry detection fails silently.
@@ -66,7 +75,7 @@ PORT=8200 DTYPE=float16 examples/vllm_omni_serve.sh wan ...
 
 | Var | Default | Purpose |
 |---|---|---|
-| `DIFFUSION_ATTENTION_BACKEND` | (unset) | Set to `LVSA` to engage |
+| `--diffusion-attention-config` (CLI flag, not env) | (platform default) | `'{"per_role": {"self": {"backend": "LVSA"}}}'` to engage. The serve wrapper injects it. |
 | `LVSA_REFERENCE_LATENT_FRAMES` | `21` | Per-model training horizon. **CRITICAL.** Wan=21, HV=33, Cog=13. |
 | `LVSA_AUTO_KEYFRAMES` | `1` | Auto-derive keyframe interval from frame count |
 | `LVSA_WAN_HOOK` | `0` | **Required for Wan**. Off for HunyuanVideo. |
@@ -125,10 +134,11 @@ If you see `[LVSA-FALLBACK] origin=forward_cuda reason=geometry_detect ...`, the
 Standard Ulysses context parallel. Set `--ulysses-degree N` in the vllm-omni CLI; the plugin handles the global K/V gather automatically.
 
 ```bash
-DIFFUSION_ATTENTION_BACKEND=LVSA \
+LVSA_HUNYUAN_HOOK=1 \
 LVSA_REFERENCE_LATENT_FRAMES=33 \
 LVSA_AUTO_KEYFRAMES=1 \
-vllm serve --omni --model HunyuanVideo-1.5 --ulysses-degree 2
+vllm serve --omni --model HunyuanVideo-1.5 --ulysses-degree 2 \
+  --diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'
 ```
 
 **Constraint**: `seq_len = T_lat × patches_per_frame` must be divisible by `N`.
@@ -155,7 +165,7 @@ lvsa-vllm-omni/
 
 | Symptom | Fix |
 |---|---|
-| No `[LVSA]` log lines | Check `DIFFUSION_ATTENTION_BACKEND=LVSA`; for Wan also `LVSA_WAN_HOOK=1` |
+| No `[LVSA]` log lines | Check `--diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'` is passed (or use the serve wrapper); for Wan also `LVSA_WAN_HOOK=1` |
 | `[LVSA-FALLBACK] reason=geometry_detect` | Set `LVSA_PATCHES_PER_FRAME` (or HEIGHT/WIDTH) for your resolution |
 | Quality regression at 1× | `LVSA_REFERENCE_LATENT_FRAMES` wrong for the model |
 | No speedup despite engagement | At T_lat ≤ ref, kfi=1 → fully dense. Lower `LVSA_SPARSITY_SCALE` to see real sparsity |

@@ -30,12 +30,14 @@ case "$MODEL_FAMILY" in
     ;;
 esac
 
-export DIFFUSION_ATTENTION_BACKEND=LVSA
+# vllm-omni 0.22 dropped the DIFFUSION_ATTENTION_BACKEND env var; the
+# `lvsa_vllm_omni.serve` wrapper injects the per-role AttentionConfig
+# (--diffusion-attention-config) automatically.
 export LVSA_AUTO_KEYFRAMES=1
 export LVSA_ROTATE_KEYFRAMES=1
 
 echo "[serve] family=$MODEL_FAMILY model=$MODEL_PATH port=$PORT dtype=$DTYPE"
 echo "[serve] LVSA env:"
-env | grep '^LVSA_\|DIFFUSION_ATTENTION_BACKEND' | sort
+env | grep '^LVSA_' | sort
 
 exec python -m lvsa_vllm_omni.serve "$MODEL_PATH" --port "$PORT" --dtype "$DTYPE"

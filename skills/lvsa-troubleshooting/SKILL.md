@@ -29,11 +29,11 @@ If the output is empty or shows only fallback warnings, walk through Symptoms 1�
 [LVSA-FALLBACK] origin=forward_cuda reason=no_t_lat seq_len=…
 ```
 
-If you see no `[LVSA]` lines at all, the backend wasn't selected — check `DIFFUSION_ATTENTION_BACKEND=LVSA` (vllm-omni) or `--lvsa` (standalone).
+If you see no `[LVSA]` lines at all, the backend wasn't selected — for vllm-omni 0.22 check that `--diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'` is passed (the `python -m lvsa_vllm_omni.serve` wrapper injects it; the `DIFFUSION_ATTENTION_BACKEND` env var was removed in 0.22). For standalone, check `--lvsa`.
 
 ### Fix
 For vllm-omni:
-- `DIFFUSION_ATTENTION_BACKEND=LVSA`
+- Pass `--diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'` (or use the serve wrapper)
 - `LVSA_AUTO_KEYFRAMES=1`
 - `LVSA_REFERENCE_LATENT_FRAMES=<21|33|13>`
 - For Wan: also `LVSA_WAN_HOOK=1` (without it Wan's `_sp_plan` pre-shards the sequence)

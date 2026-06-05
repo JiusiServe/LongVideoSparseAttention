@@ -14,9 +14,11 @@ QA we run before tagging a release.
 
 ## Prerequisites
 
-- The `lvsa-vllm-omni` plugin venv with `vllm==0.18.0` and `vllm-omni==0.18.0` pinned.
-  See [`../examples/README.md`](../examples/README.md) for the setup. The sweep
-  expects `$ROOT/.venv-vllm/bin/python` by default; override with `PYTHON_VENV=...`.
+- The `lvsa-vllm-omni` plugin venv with `vllm==0.22.0` (PyPI) and
+  `vllm-omni==0.22.0rc1` (built from git — not on PyPI; versions intentionally
+  differ). See [`../examples/README.md`](../examples/README.md) for the setup.
+  The sweep expects `$ROOT/.venv-vllm/bin/python` by default; override with
+  `PYTHON_VENV=...`.
 - A GPU with ≥ 24 GB VRAM for Wan 1.3B; ≥ 80 GB for Wan 14B or HunyuanVideo at ≥ 1.5×.
 - Local model checkpoints (HuggingFace `*-Diffusers` snapshots). Provide them via
   the env vars below — cells whose model path is empty or missing are skipped

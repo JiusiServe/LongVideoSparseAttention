@@ -43,6 +43,16 @@ def parse_args():
     ap.add_argument("--sparsity-scale", type=float, default=1.0)
     ap.add_argument("--no-rotate", action="store_true",
                     help="Disable rotating keyframes.")
+    # ── VAE memory (default ON) ───────────────────────────────────────────────
+    # HunyuanVideo 1.5's VAE decode is the memory ceiling at longer clips — it
+    # OOMs at ~65+ frames on an 80 GB GPU without tiling, independent of LVSA
+    # (the sparse attention completes; the dense VAE decode is what runs out).
+    # Tiling/slicing decode the latents in chunks and are effectively lossless,
+    # so they default ON. Disable with --no-vae-tiling / --no-vae-slicing.
+    ap.add_argument("--vae-tiling", action=argparse.BooleanOptionalAction, default=True,
+                    help="VAE tiling to avoid OOM on long clips (default: on).")
+    ap.add_argument("--vae-slicing", action=argparse.BooleanOptionalAction, default=True,
+                    help="VAE slicing to avoid OOM on long clips (default: on).")
     return ap.parse_args()
 
 
@@ -102,7 +112,6 @@ def main():
 
     # ── LVSA env-var setup (must happen BEFORE vllm_omni import) ────────────
     if not args.no_lvsa:
-        os.environ["DIFFUSION_ATTENTION_BACKEND"] = "LVSA"
         os.environ["LVSA_HUNYUAN_HOOK"] = "1"
         # Latent-frame count for HunyuanVideo: (num_frames - 1) // 4 + 1
         t_lat = (args.num_frames - 1) // 4 + 1
@@ -121,11 +130,27 @@ def main():
     from vllm_omni.inputs.data import OmniDiffusionSamplingParams
     from diffusers.utils import export_to_video
 
+    # vllm-omni 0.22 selects the attention backend per role via AttentionConfig
+    # (replacing the old DIFFUSION_ATTENTION_BACKEND env var). Route the
+    # self-attention role to LVSA; cross-attention keeps the platform default.
+    omni_kwargs = {}
+    if not args.no_lvsa:
+        omni_kwargs["diffusion_attention_config"] = {
+            "per_role": {"self": {"backend": "LVSA"}}
+        }
+    # VAE memory optimizations — required for HunyuanVideo 1.5 at reference
+    # length (129f) on a single 80 GB GPU. See the --vae-tiling note above.
+    if args.vae_tiling:
+        omni_kwargs["vae_use_tiling"] = True
+    if args.vae_slicing:
+        omni_kwargs["vae_use_slicing"] = True
+
     print(f"[offline_hunyuan] loading {args.model} (tp={args.tensor_parallel_size}, dtype={args.dtype})")
     omni = Omni(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
         dtype=args.dtype,
+        **omni_kwargs,
     )
 
     try:

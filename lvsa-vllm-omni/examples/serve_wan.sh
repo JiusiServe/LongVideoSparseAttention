@@ -26,7 +26,9 @@ DTYPE=${DTYPE:-bfloat16}
 TP=${TP:-1}
 
 # ── LVSA backend selection ───────────────────────────────────────────────────
-export DIFFUSION_ATTENTION_BACKEND=LVSA
+# vllm-omni 0.22 dropped the DIFFUSION_ATTENTION_BACKEND env var; the
+# `lvsa_vllm_omni.serve` wrapper below injects the equivalent per-role
+# AttentionConfig (--diffusion-attention-config) automatically.
 export LVSA_WAN_HOOK=1
 export LVSA_REFERENCE_LATENT_FRAMES=${LVSA_REFERENCE_LATENT_FRAMES:-21}
 export LVSA_TOTAL_LATENT_FRAMES=${LVSA_TOTAL_LATENT_FRAMES:-21}
@@ -51,7 +53,7 @@ fi
 
 echo "[serve_wan] model=$MODEL_PATH port=$PORT dtype=$DTYPE tp=$TP python=$PYTHON_BIN"
 echo "[serve_wan] LVSA env:"
-env | grep '^LVSA_\|DIFFUSION_ATTENTION_BACKEND' | sort
+env | grep '^LVSA_' | sort
 
 exec "$PYTHON_BIN" -m lvsa_vllm_omni.serve "$MODEL_PATH" \
     --port "$PORT" \

@@ -6,8 +6,7 @@ encoder streams are still separate. This is equivalent to what the standalone
 DistributedLVSAProcessor does.
 
 Usage: call ``install_hunyuan_lvsa_hook()`` after model loading in the worker process.
-This is triggered automatically when DIFFUSION_ATTENTION_BACKEND=LVSA and the model
-is HunyuanVideo.
+Triggered automatically by ``register_lvsa_backend()`` when ``LVSA_HUNYUAN_HOOK=1``.
 """
 
 import os
@@ -49,8 +48,41 @@ def _mask_log_should_fire(spec: str, step_idx: int, last_step: int) -> bool:
         return False
 
 
+def _log_engagement_once(state, model, total_latent_frames, num_patches, seq_len, metadata):
+    """Print a one-time positive confirmation that LVSA actually engaged for
+    generation (geometry matched, not a warmup fallback).
+
+    Default-on, deduped per generation via ``state._engaged_logged`` (reset on
+    seq_len change in ``tick``). Distinguishes engaged-and-sparse (kfi>1, above
+    reference) from engaged-but-dense (kfi==1, at/below reference) — neither of
+    which was visible before, since the LVSA path only logged the opt-in
+    ``LVSA_MASK_LOG``. Silence here, with a ``[LVSA-FALLBACK]`` only at the
+    warmup seq_len, now means "engaged for every generation step"."""
+    if state._engaged_logged:
+        return
+    state._engaged_logged = True
+    kfi = metadata.key_frame_interval
+    mode = "SPARSE" if kfi > 1 else "DENSE (T_lat <= ref)"
+    print(
+        f"[LVSA] engaged ({model}): T_lat={total_latent_frames} P={num_patches} "
+        f"seq_len={seq_len} kfi={kfi} W={metadata.window_size} "
+        f"|G|={len(metadata.global_set)} -> {mode}",
+        flush=True,
+    )
+
+
 class HunyuanLVSAState:
-    """Shared LVSA state across all hooked attention blocks."""
+    """Shared LVSA state across all hooked attention blocks.
+
+    Concurrency: state is intentionally shared across every block within a
+    generation — that's how step counting + metadata caching work. We do not
+    wrap it in ``threading.local()`` because every vllm-omni diffusion worker
+    is a single process running a single asyncio loop on one OS thread; the
+    warmup and every request hit this state sequentially. Thread-local
+    storage would also not help if vllm-omni later adds in-worker batching
+    (coroutines share the same OS thread) — that case would need a
+    request-scoped key.
+    """
 
     def __init__(self, config: LVSAConfig) -> None:
         self.config = config
@@ -68,6 +100,8 @@ class HunyuanLVSAState:
         self._generation_seq_len: Optional[int] = None
         self._last_step_time: Optional[float] = None
         self._mask_log_last_step: int = -1
+        # One-time positive engagement log per generation (reset on seq_len change).
+        self._engaged_logged: bool = False
 
     def tick(self, layer_id: int, seq_len: int) -> int:
         """Track denoising step by counting self-attention calls.
@@ -78,6 +112,7 @@ class HunyuanLVSAState:
             self._call_count = 0
             self._step = 0
             self._seen_ids.clear()
+            self._engaged_logged = False
 
         if self._generation_seq_len is None:
             self._generation_seq_len = seq_len
@@ -203,8 +238,79 @@ def install_hunyuan_lvsa_hook(total_latent_frames: int) -> None:
         encoder_hidden_states: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         image_rotary_emb: tuple | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """LVSA-enhanced forward: sparse attention on video, dense on encoder."""
+        hidden_states_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """LVSA-enhanced forward: sparse attention on video, dense on encoder.
+
+        Signature mirrors vllm-omni 0.22 ``HunyuanVideo15Attention.forward``,
+        which added the ``hidden_states_mask`` argument (sequence-parallel
+        padding mask) and may return a single tensor when there is no encoder
+        stream.
+        """
+
+        video_seq = hidden_states.shape[1]
+
+        # ── Step tracking ──
+        # Ticked on every forward (including fallbacks) so the per-module step
+        # cadence is identical to before this early-return guard was added.
+        step_idx = state.tick(id(self), video_seq)
+
+        # ── Distributed CP guard ──
+        # Under Ulysses / Ring SP, ``video_seq`` is the per-rank shard, not the
+        # full T_lat × P. Geometry detection would silently corrupt the
+        # attention pattern. Fall back to dense in that case.
+        try:
+            import torch.distributed as _dist
+            _is_distributed = _dist.is_initialized() and _dist.get_world_size() > 1
+        except Exception:
+            _is_distributed = False
+
+        # ── Geometry / stream checks BEFORE any projection ──
+        # Performing these first avoids wasting QKV / RoPE compute on warmup or
+        # unsupported distributed runs, and — critically — prevents deriving a
+        # truncated patch count ``P`` from a non-divisible warmup sequence,
+        # which would otherwise silently corrupt the sparse attention pattern.
+        geometry_ok = (
+            total_latent_frames > 0
+            and video_seq % total_latent_frames == 0
+            and encoder_hidden_states is not None
+            and not _is_distributed
+        )
+
+        if not geometry_ok:
+            from ._fallback import warn_fallback
+            if encoder_hidden_states is None:
+                reason, extra = "no_encoder", {"step": step_idx}
+            elif _is_distributed:
+                reason = "distributed_cp"
+                extra = {"step": step_idx, "world_size": _dist.get_world_size()}
+            else:
+                reason = "geometry_mismatch"
+                extra = {"step": step_idx, "T_lat": total_latent_frames}
+            warn_fallback(
+                origin="hunyuan_hook", reason=reason,
+                seq_len=video_seq, extra=extra,
+            )
+            # Delegate to the original (SP-aware) dense forward rather than
+            # reimplement it — keeps us correct against vllm-omni 0.22's
+            # signature (hidden_states_mask, joint-attention metadata).
+            return _orig_forward(
+                self,
+                hidden_states,
+                encoder_hidden_states,
+                attention_mask,
+                image_rotary_emb,
+                hidden_states_mask,
+            )
+
+        P = video_seq // total_latent_frames
+
+        # NOTE: ``hidden_states_mask`` (vllm-omni 0.22's sequence-parallel
+        # padding mask) is intentionally ignored on this LVSA path. The
+        # ``not _is_distributed`` gate above guarantees we only reach here when
+        # world == 1 — i.e. no SP padding — so there is no mask to honor. Any
+        # distributed/padded case takes the fallback, which forwards the mask to
+        # the SP-aware original forward.
 
         # ── Video QKV (same as original) ──
         qkv, _ = self.to_qkv(hidden_states)
@@ -226,138 +332,72 @@ def install_hunyuan_lvsa_hook(total_latent_frames: int) -> None:
             query = self.rope(query, cos, sin)
             key = self.rope(key, cos, sin)
 
-        # ── Encoder QKV ──
-        enc_query = enc_key = enc_value = None
-        if encoder_hidden_states is not None:
-            encoder_qkv, _ = self.add_kv_proj(encoder_hidden_states)
-            add_q_size = self.add_kv_proj.num_heads * self.head_dim
-            add_kv_size = self.add_kv_proj.num_kv_heads * self.head_dim
-            encoder_query, encoder_key, encoder_value = encoder_qkv.split(
-                [add_q_size, add_kv_size, add_kv_size], dim=-1
+        # ── Encoder QKV (encoder stream guaranteed present by geometry_ok) ──
+        encoder_qkv, _ = self.add_kv_proj(encoder_hidden_states)
+        add_q_size = self.add_kv_proj.num_heads * self.head_dim
+        add_kv_size = self.add_kv_proj.num_kv_heads * self.head_dim
+        encoder_query, encoder_key, encoder_value = encoder_qkv.split(
+            [add_q_size, add_kv_size, add_kv_size], dim=-1
+        )
+        encoder_query = encoder_query.unflatten(-1, (self.add_kv_proj.num_heads, -1))
+        encoder_key = encoder_key.unflatten(-1, (self.add_kv_proj.num_kv_heads, -1))
+        encoder_value = encoder_value.unflatten(-1, (self.add_kv_proj.num_kv_heads, -1))
+
+        encoder_query = self.norm_added_q(encoder_query)
+        encoder_key = self.norm_added_k(encoder_key)
+
+        # ── LVSA path: sparse on video, dense on encoder ──
+        metadata = state.get_metadata(total_latent_frames, P, step_idx, query.device)
+        _log_engagement_once(state, "hunyuan", total_latent_frames, P, video_seq, metadata)
+
+        # Opt-in compact attention-mask log (LVSA_MASK_LOG env). Dedups across
+        # attention blocks via state._mask_log_last_step so we print once per
+        # step boundary, not once per block.
+        mask_spec = os.environ.get("LVSA_MASK_LOG", "")
+        if _mask_log_should_fire(mask_spec, step_idx, state._mask_log_last_step):
+            state._mask_log_last_step = step_idx
+            print(
+                f"[LVSA-MASK] step={step_idx}  T_lat={total_latent_frames}  "
+                f"W={metadata.window_size}  |G|={len(metadata.global_set)}  "
+                f"kfi={metadata.key_frame_interval}",
+                flush=True,
             )
-            encoder_query = encoder_query.unflatten(-1, (self.add_kv_proj.num_heads, -1))
-            encoder_key = encoder_key.unflatten(-1, (self.add_kv_proj.num_kv_heads, -1))
-            encoder_value = encoder_value.unflatten(-1, (self.add_kv_proj.num_kv_heads, -1))
-
-            encoder_query = self.norm_added_q(encoder_query)
-            encoder_key = self.norm_added_k(encoder_key)
-
-        # ── Step tracking ──
-        step_idx = state.tick(id(self), query.shape[1])
-
-        # Warn if encoder is unexpectedly missing
-        if encoder_hidden_states is None:
-            from ._fallback import warn_fallback
-            warn_fallback(
-                origin="hunyuan_hook",
-                reason="no_encoder",
-                seq_len=query.shape[1],
-                extra={"step": step_idx},
-            )
-
-        # ── Distributed CP guard ──
-        # Under Ulysses / Ring SP, ``video_seq`` is the per-rank shard, not the
-        # full T_lat × P. Geometry detection would silently corrupt the
-        # attention pattern. Fall back to dense in that case.
-        try:
-            import torch.distributed as _dist
-            _is_distributed = _dist.is_initialized() and _dist.get_world_size() > 1
-        except Exception:
-            _is_distributed = False
-        if _is_distributed and encoder_hidden_states is not None:
-            from ._fallback import warn_fallback
-            warn_fallback(
-                origin="hunyuan_hook",
-                reason="distributed_cp",
-                seq_len=query.shape[1],
-                extra={"step": step_idx,
-                       "world_size": _dist.get_world_size()},
+            print_attention_mask_compact(
+                total_frames=total_latent_frames,
+                window_size=metadata.window_size,
+                global_set=metadata.global_set,
+                expand_window=metadata.expand_window,
             )
 
-        if encoder_hidden_states is not None and not _is_distributed:
-            # ── LVSA path: sparse on video, dense on encoder ──
-            B, video_seq, H, D = query.shape
-            P = video_seq // total_latent_frames
+        # Build global K/V from video + append encoder K/V
+        k_global, v_global = build_global_kv(key, value, metadata.global_indices, P)
+        k_global = torch.cat([k_global, encoder_key], dim=1)
+        v_global = torch.cat([v_global, encoder_value], dim=1)
 
-            metadata = state.get_metadata(total_latent_frames, P, step_idx, query.device)
+        # LVSA on video queries
+        video_output = lvsa_sdpa(query, key, value, k_global, v_global, metadata)
 
-            # Opt-in compact attention-mask log (LVSA_MASK_LOG env). Dedups
-            # across attention blocks via state._mask_log_last_step so we
-            # print once per step boundary, not once per block.
-            mask_spec = os.environ.get("LVSA_MASK_LOG", "")
-            if _mask_log_should_fire(mask_spec, step_idx, state._mask_log_last_step):
-                state._mask_log_last_step = step_idx
-                print(
-                    f"[LVSA-MASK] step={step_idx}  T_lat={total_latent_frames}  "
-                    f"W={metadata.window_size}  |G|={len(metadata.global_set)}  "
-                    f"kfi={metadata.key_frame_interval}",
-                    flush=True,
-                )
-                print_attention_mask_compact(
-                    total_frames=total_latent_frames,
-                    window_size=metadata.window_size,
-                    global_set=metadata.global_set,
-                    expand_window=metadata.expand_window,
-                )
+        # Dense attention for encoder queries (attend to all video + encoder)
+        full_k = torch.cat([key, encoder_key], dim=1)
+        full_v = torch.cat([value, encoder_value], dim=1)
+        eq = encoder_query.transpose(1, 2)
+        ek = full_k.transpose(1, 2)
+        ev = full_v.transpose(1, 2)
+        encoder_output = F.scaled_dot_product_attention(
+            eq, ek, ev, dropout_p=0.0, is_causal=False,
+        ).transpose(1, 2)
 
-            # Build global K/V from video + append encoder K/V
-            k_global, v_global = build_global_kv(key, value, metadata.global_indices, P)
-            k_global = torch.cat([k_global, encoder_key], dim=1)
-            v_global = torch.cat([v_global, encoder_value], dim=1)
+        hidden_states = video_output
+        hidden_states = hidden_states.flatten(2, 3)
+        hidden_states = hidden_states.to(query.dtype)
+        hidden_states = self.to_out[0](hidden_states)
 
-            # LVSA on video queries
-            video_output = lvsa_sdpa(query, key, value, k_global, v_global, metadata)
+        encoder_hidden_states = encoder_output
+        encoder_hidden_states = encoder_hidden_states.flatten(2, 3)
+        encoder_hidden_states = encoder_hidden_states.to(query.dtype)
+        encoder_hidden_states = self.to_add_out(encoder_hidden_states)
 
-            # Dense attention for encoder queries (attend to all video + encoder)
-            full_k = torch.cat([key, encoder_key], dim=1)
-            full_v = torch.cat([value, encoder_value], dim=1)
-            eq = encoder_query.transpose(1, 2)
-            ek = full_k.transpose(1, 2)
-            ev = full_v.transpose(1, 2)
-            encoder_output = F.scaled_dot_product_attention(
-                eq, ek, ev, dropout_p=0.0, is_causal=False,
-            ).transpose(1, 2)
-
-            hidden_states = video_output
-            hidden_states = hidden_states.flatten(2, 3)
-            hidden_states = hidden_states.to(query.dtype)
-            hidden_states = self.to_out[0](hidden_states)
-
-            encoder_hidden_states = encoder_output
-            encoder_hidden_states = encoder_hidden_states.flatten(2, 3)
-            encoder_hidden_states = encoder_hidden_states.to(query.dtype)
-            encoder_hidden_states = self.to_add_out(encoder_hidden_states)
-
-            return hidden_states, encoder_hidden_states
-        else:
-            # ── Dense path: original behavior ──
-            if encoder_hidden_states is not None:
-                query = torch.cat([query, encoder_query], dim=1)
-                key = torch.cat([key, encoder_key], dim=1)
-                value = torch.cat([value, encoder_value], dim=1)
-
-            attn_metadata = None
-            if attention_mask is not None:
-                from vllm_omni.diffusion.attention.backends.abstract import AttentionMetadata
-                seq_len = query.shape[1]
-                attention_mask = F.pad(attention_mask, (seq_len - attention_mask.shape[1], 0), value=True)
-                attention_mask = attention_mask.bool()
-                attn_metadata = AttentionMetadata(attn_mask=attention_mask)
-
-            out = self.attn(query, key, value, attn_metadata)
-            out = out.flatten(2, 3)
-            out = out.to(query.dtype)
-
-            if encoder_hidden_states is not None:
-                hidden_states, encoder_hidden_states = out.split_with_sizes(
-                    [out.shape[1] - encoder_hidden_states.shape[1], encoder_hidden_states.shape[1]], dim=1
-                )
-                hidden_states = self.to_out[0](hidden_states)
-                encoder_hidden_states = self.to_add_out(encoder_hidden_states)
-                return hidden_states, encoder_hidden_states
-            else:
-                out = self.to_out[0](out)
-                return out
+        return hidden_states, encoder_hidden_states
 
     # Apply the monkey-patch
     HunyuanVideo15Attention.forward = _lvsa_forward

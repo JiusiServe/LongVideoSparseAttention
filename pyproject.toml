@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lvsa"
-version = "1.0.0"
+version = "1.1.0"
 description = "Long Video Sparse Attention — block-sparse sliding window attention for video diffusion transformers"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}

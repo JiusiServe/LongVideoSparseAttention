@@ -39,20 +39,29 @@ lvsa-vllm-omni/
 
 ```bash
 pip install -e lvsa-vllm-omni/
-pip install "vllm==0.18.0" "vllm-omni==0.18.0"   # validated pair
+# vllm-omni 0.22.0rc1 is a pre-release (not on PyPI) — build it from git.
+# Versions intentionally differ: vllm-omni 0.22.0rc1 rebases onto vllm 0.22.0.
+pip install "vllm==0.22.0"
+pip install --no-build-isolation \
+  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
+
+# vllm-omni 0.22 selects the attention backend per role via AttentionConfig
+# (the DIFFUSION_ATTENTION_BACKEND env var was removed). The `python -m
+# lvsa_vllm_omni.serve` wrapper injects this flag for you; the raw form is:
 
 # Enable for HunyuanVideo
-DIFFUSION_ATTENTION_BACKEND=LVSA \
+LVSA_HUNYUAN_HOOK=1 \
 LVSA_AUTO_KEYFRAMES=1 \
 LVSA_REFERENCE_LATENT_FRAMES=33 \
-vllm serve --omni --model HunyuanVideo-1.5-Diffusers-480p_t2v
+vllm serve --omni --model HunyuanVideo-1.5-Diffusers-480p_t2v \
+  --diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'
 
 # Enable for Wan (also needs the Wan hook explicit)
-DIFFUSION_ATTENTION_BACKEND=LVSA \
 LVSA_WAN_HOOK=1 \
 LVSA_AUTO_KEYFRAMES=1 \
 LVSA_REFERENCE_LATENT_FRAMES=21 \
-vllm serve --omni --model Wan2.2-T2V-14B
+vllm serve --omni --model Wan2.2-T2V-14B \
+  --diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'
 ```
 
 The plugin entry point in `pyproject.toml` registers `lvsa_vllm_omni:register` under `vllm_omni.general_plugins`, which fires at vLLM-Omni startup.

@@ -95,10 +95,11 @@ def dense_self_attention(q, k, v):
 
 
 class TestBackendDiscovery:
-    """Test that the backend can be discovered via env var (as vllm-omni does)."""
+    """Test that the backend class resolves from its registry path (as the
+    vllm-omni 0.22 selector does once ``LVSA`` is registered in the enum)."""
 
     def test_import_backend_from_path(self):
-        """Simulate DIFFUSION_ATTENTION_BACKEND=lvsa_vllm_omni.backend.LVSABackend"""
+        """Resolve lvsa_vllm_omni.backend.LVSABackend by its qualified path."""
         module_path = "lvsa_vllm_omni.backend"
         class_name = "LVSABackend"
 

@@ -1,11 +1,18 @@
 """LVSA AttentionBackend for vllm-omni.
 
-Register via environment variable::
+``register_lvsa_backend()`` adds ``LVSA`` to vllm-omni's
+``DiffusionAttentionBackendEnum``. Select it per attention role via the 0.22
+AttentionConfig, e.g. on the CLI::
 
-    export DIFFUSION_ATTENTION_BACKEND=lvsa_vllm_omni.backend.LVSABackend
+    --diffusion-attention-config '{"per_role": {"self": {"backend": "LVSA"}}}'
 
-Then run vllm-omni normally — all DiT self-attention will use sparse
-windowed attention while cross-attention falls back to dense SDPA.
+or through the Python API::
+
+    Omni(model=..., diffusion_attention_config={"per_role": {"self": {"backend": "LVSA"}}})
+
+DiT self-attention then uses sparse windowed attention while cross-attention
+falls back to dense SDPA (different q/kv sequence lengths are detected and
+routed to the dense path automatically).
 """
 
 from typing import List, Type

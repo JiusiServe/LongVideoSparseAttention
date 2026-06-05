@@ -514,31 +514,72 @@ class DistributedLVSAProcessor:
             query, key, rotary_emb, local_seq, self.rank, self.world,
         )
 
-        # ── Attention computation ────────────────────────────────────────────
-        # Start global KV build — the all-reduce runs asynchronously so we
-        # can overlap communication with the encoder KV concatenation below.
-        k_global, v_global = self._build_global_kv(key, value)
+        # ── Geometry guard ───────────────────────────────────────────────────
+        # LVSA's window/keyframe math assumes the self-attention sequence is a
+        # frame grid: ``local_seq == (total_num_frames × num_patches) // world``,
+        # with tokens grouped by frame (a token's frame is ``token // P``). If a
+        # model feeds a sequence that does not match — e.g. prepended history
+        # tokens (Helios chunked-AR), a non-frame-structured layout, or an
+        # unexpected resolution — the per-frame windowing silently MISaligns and
+        # corrupts the output (no error). Detect that and fall back to dense full
+        # attention so a geometry mismatch degrades safely instead of silently.
+        geometry_ok = self._geometry_matches(local_seq)
 
-        # ── While the all-reduce is in flight, prepare encoder KV ────────────
-        # This work is independent of the global KV buffer contents, so it
-        # can execute concurrently with the NCCL collective.
-        _enc_k_ready = enc_k
-        _enc_v_ready = enc_v
+        if geometry_ok:
+            # ── Attention computation ────────────────────────────────────────
+            # Start global KV build — the all-reduce runs asynchronously so we
+            # can overlap communication with the encoder KV concatenation below.
+            k_global, v_global = self._build_global_kv(key, value)
 
-        # ── Wait for the async all-reduce to complete ────────────────────────
-        if self._kv_reduce_work is not None:
-            self._kv_reduce_work.wait()
-            self._kv_reduce_work = None
+            # ── While the all-reduce is in flight, prepare encoder KV ────────
+            # This work is independent of the global KV buffer contents, so it
+            # can execute concurrently with the NCCL collective.
+            _enc_k_ready = enc_k
+            _enc_v_ready = enc_v
 
-        # Dual-stream: append encoder K/V to global context so every
-        # video frame attends to all text tokens.
-        if _enc_k_ready is not None:
-            k_global = torch.cat([k_global, _enc_k_ready], dim=1)
-            v_global = torch.cat([v_global, _enc_v_ready], dim=1)
+            # ── Wait for the async all-reduce to complete ────────────────────
+            if self._kv_reduce_work is not None:
+                self._kv_reduce_work.wait()
+                self._kv_reduce_work = None
 
-        hidden_states = self._compute_lvsa(
-            query, key, value, k_global, v_global, encoder_hidden_states,
-        )
+            # Dual-stream: append encoder K/V to global context so every
+            # video frame attends to all text tokens.
+            if _enc_k_ready is not None:
+                k_global = torch.cat([k_global, _enc_k_ready], dim=1)
+                v_global = torch.cat([v_global, _enc_v_ready], dim=1)
+
+            hidden_states = self._compute_lvsa(
+                query, key, value, k_global, v_global, encoder_hidden_states,
+            )
+        else:
+            # ── Dense fallback (geometry mismatch) ───────────────────────────
+            # Video queries attend densely to all video (+ encoder) K/V. The
+            # shared encoder-query / cross-attn / output / format tail below is
+            # identical for both paths, so a fallback here is correct dense
+            # attention — just without LVSA's sparsity.
+            #
+            # This path uses the LOCAL key/value only. Under context parallelism
+            # (world > 1) the local shard is not the full sequence, so per-rank
+            # dense attention would be silently incorrect. LVSA + CP requires the
+            # clean T_lat × P frame grid; a geometry mismatch under CP is an
+            # unsupported layout, not a recoverable single-rank fallback — so
+            # fail loudly rather than emit per-shard output. (The plugin hooks'
+            # equivalent path delegates to vllm-omni's SP-aware forward; the
+            # standalone processor has no such delegate.)
+            if self.world > 1:
+                raise NotImplementedError(
+                    f"LVSA dense fallback under context parallelism is unsupported "
+                    f"(geometry mismatch: local_seq={local_seq}, world={self.world}). "
+                    f"The local shard is not the full sequence — run single-rank, or "
+                    f"use a layout whose sequence is a clean T_lat x P frame grid."
+                )
+            self._warn_geometry_mismatch_once(local_seq)
+            if enc_k is not None:
+                full_k = torch.cat([key, enc_k], dim=1)
+                full_v = torch.cat([value, enc_v], dim=1)
+                hidden_states = self._compute_full_attention(query, full_k, full_v)
+            else:
+                hidden_states = self._compute_full_attention(query, key, value)
 
         # ── Dual-stream: encoder query full attention ────────────────────────
         # Encoder query tokens need full attention against all K/V (video + encoder).
@@ -566,6 +607,36 @@ class DistributedLVSAProcessor:
                 attn, hidden_states, enc_output, encoder_seq_len, query_dtype,
             )
         return hidden_states
+
+    def _geometry_matches(self, local_seq: int) -> bool:
+        """True when ``local_seq`` is the expected per-rank video token count —
+        a clean frame grid: ``local_seq × world == total_num_frames × num_patches``.
+        When False, the sequence is not frame-structured (e.g. prepended history
+        tokens) and LVSA's windowing must not engage (see the guard in __call__)."""
+        return (
+            self.num_patches > 0
+            and local_seq * self.world == self.total_num_frames * self.num_patches
+        )
+
+    def _warn_geometry_mismatch_once(self, local_seq: int) -> None:
+        """Warn once per processor that the runtime sequence is not the expected
+        frame grid, so LVSA fell back to dense attention (see the geometry guard
+        in ``__call__``)."""
+        if getattr(self, "_geometry_warned", False):
+            return
+        self._geometry_warned = True
+        if self.rank == 0:
+            expected = self.total_num_frames * self.num_patches
+            print(
+                f"[LVSA] WARNING geometry mismatch: runtime self-attention "
+                f"seq={local_seq} (world={self.world}) != configured "
+                f"T_lat*P={expected} (total_num_frames={self.total_num_frames}, "
+                f"num_patches={self.num_patches}). The token sequence is not the "
+                f"expected per-frame grid (e.g. prepended history tokens or a "
+                f"non-frame-structured layout) -> falling back to DENSE attention "
+                f"to avoid silent corruption. LVSA is not engaging for this model.",
+                flush=True,
+            )
 
     # ── Global K/V construction ───────────────────────────────────────────────
 
