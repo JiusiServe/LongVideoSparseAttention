@@ -1,6 +1,6 @@
 """LVSA — Long Video Sparse Attention for video diffusion models."""
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 
 # Lazy imports: DistributedLVSAProcessor pulls in diffusers at module level,
 # so we defer it to avoid ImportError when diffusers isn't installed (e.g. in

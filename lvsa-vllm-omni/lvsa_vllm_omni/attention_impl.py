@@ -174,6 +174,24 @@ from .config import candidate_patches_per_frame as _ppf_candidates
 _mask_log_last_step: int = -1
 
 
+# One-time warning when LVSA_BACKEND=flashinfer is requested but FlashInfer is
+# not installed — degrade to the SDPA per-frame loop with a legible message
+# instead of dereferencing the missing module deep inside the runner.
+_fi_unavailable_warned: bool = False
+
+
+def _warn_flashinfer_unavailable_once() -> None:
+    global _fi_unavailable_warned
+    if not _fi_unavailable_warned:
+        _fi_unavailable_warned = True
+        print(
+            "[LVSA] LVSA_BACKEND=flashinfer requested but flashinfer is not "
+            "installed -> falling back to the SDPA per-frame loop. Install with "
+            "`pip install flashinfer-python flashinfer-cubin` to enable it.",
+            flush=True,
+        )
+
+
 def _mask_log_should_fire(step_idx: int) -> bool:
     """Return True if LVSA_MASK_LOG env requests printing at this step
     AND we have not yet printed for this step. Dedups across layers.
@@ -255,12 +273,6 @@ class LVSAAttentionImpl:
         self._cached_num_patches: Optional[int] = None
         self._cached_step: int = -1
 
-        # FlashInfer cached state
-        self._fi_compact_k: Optional[torch.Tensor] = None
-        self._fi_compact_v: Optional[torch.Tensor] = None
-        self._fi_workspace: Optional[torch.Tensor] = None
-        self._fi_wrapper: Optional[Any] = None
-
         LVSAAttentionImpl._total_instances += 1
 
     # ── Public interface ─────────────────────────────────────────────────
@@ -274,6 +286,16 @@ class LVSAAttentionImpl:
     ) -> torch.Tensor:
         return self.forward_cuda(query, key, value, attn_metadata)
 
+    # Run the WHOLE LVSA attention eager. vllm-omni torch.compiles the transformer,
+    # and this entry's geometry-detect + ``counter.tick(id(self), seq_len)`` (varying
+    # seq_len + per-instance id) makes dynamo recompile up to recompile_limit (8).
+    # Each cached graph pins GPU memory, so on a big model (HunyuanVideo: ~34 GB
+    # loaded) the 8-graph bloat (~45 GB) blows past 80 GB even at 1×/1-step — while
+    # the eager standalone fits the same workload at ~47 GB. Disabling compile here
+    # graph-breaks at the attention (the transformer still compiles around it; the
+    # FlashInfer/SDPA attention is a fused kernel, so nothing is lost) → no recompiles,
+    # no bloat. Supersedes the narrower @disable on _lvsa_attention below.
+    @torch.compiler.disable
     def forward_cuda(
         self,
         query: torch.Tensor,
@@ -320,6 +342,14 @@ class LVSAAttentionImpl:
 
     # ── LVSA path ─────────────────────────────────────────────────────────
 
+    # Run the LVSA path eager. The metadata/CSR build is data-dependent Python
+    # (``.item()``, list construction) and is rebuilt every denoising step under
+    # rotating keyframes, so under vllm-omni's mandatory ``torch.compile`` it
+    # graph-breaks and recompiles each step (the first step exceeded the
+    # server's request timeout → 504). Marking the LVSA path compiler-disabled
+    # keeps the rest of the transformer compiled while the already-fused
+    # FlashInfer / SDPA attention runs eagerly — as it does in the standalone.
+    @torch.compiler.disable
     def _lvsa_attention(
         self,
         query: torch.Tensor,
@@ -412,18 +442,35 @@ class LVSAAttentionImpl:
             k_global = torch.cat([k_global, k_text], dim=1)
             v_global = torch.cat([v_global, v_text], dim=1)
 
-        # Sparse attention on video tokens
-        fi_kwargs = {}
+        # Sparse attention on video tokens.
+        # FlashInfer goes through the LSE-merge runner: gen block-sparse + a
+        # SEPARATE dense encoder/text term combined via log-sum-exp. This avoids
+        # the old zero-padded-encoder-block bug (a single fused block-sparse call
+        # attended to phantom zero keys when the text length wasn't a multiple
+        # of P — diluting every video query). SDPA keeps its exact per-frame loop.
         if self.config.backend == "flashinfer":
-            fi_kwargs = self._build_flashinfer_args(
-                q_video, k_video, v_video, k_global, v_global, P,
+            # Shared singleton across ALL layers: the runner's workspace +
+            # compact K/V are per-call scratch, so one instance suffices. A
+            # per-layer instance (the old `self._fi_runner`) duplicated ~1 GB of
+            # persistent scratch per layer (~30 GB for a 40-layer model).
+            from .flashinfer_runner import FLASHINFER_AVAILABLE, get_shared_runner
+            if FLASHINFER_AVAILABLE:
+                out_video = get_shared_runner().run(
+                    q_video, k_video, v_video, k_global, v_global, self._lvsa_metadata,
+                )
+            else:
+                # flashinfer absent → legible degrade to SDPA (not an opaque
+                # AttributeError on the missing BlockSparseAttentionWrapper).
+                _warn_flashinfer_unavailable_once()
+                out_video = sparse_windowed_attention(
+                    q_video, k_video, v_video, k_global, v_global,
+                    self._lvsa_metadata, backend="sdpa",
+                )
+        else:
+            out_video = sparse_windowed_attention(
+                q_video, k_video, v_video, k_global, v_global,
+                self._lvsa_metadata, backend=self.config.backend,
             )
-
-        out_video = sparse_windowed_attention(
-            q_video, k_video, v_video, k_global, v_global,
-            self._lvsa_metadata, backend=self.config.backend,
-            **fi_kwargs,
-        )
 
         if q_text is not None:
             # Encoder queries attend to all K/V (dense)
@@ -433,133 +480,6 @@ class LVSAAttentionImpl:
             return torch.cat([out_video, out_text], dim=1)
 
         return out_video
-
-    # ── FlashInfer buffer construction ─────────────────────────────────
-
-    def _build_flashinfer_args(
-        self,
-        q_video: torch.Tensor,
-        k_video: torch.Tensor,
-        v_video: torch.Tensor,
-        k_global: torch.Tensor,
-        v_global: torch.Tensor,
-        P: int,
-    ) -> dict:
-        """Build compact KV buffers and FlashInfer wrapper from LVSAMetadata.
-
-        Mirrors DistributedLVSAProcessor._compute_lvsa_flashinfer / _ensure_flashinfer_planned:
-        - Fills compact KV with video global + local frames
-        - Detects encoder tokens appended to k_global and extends the CSR
-        - Caches the plan across calls (re-plans only when enc_tokens changes)
-        """
-        import flashinfer
-
-        meta = self._lvsa_metadata
-        B, video_seq, H, D = q_video.shape
-        device = q_video.device
-        compact_n = meta.fi_compact_n
-
-        # ── Detect encoder tokens appended to k_global ──
-        num_global_video_tokens = len(meta.global_indices) * P
-        total_global_tokens = k_global.shape[1]
-        enc_tokens = total_global_tokens - num_global_video_tokens
-        enc_blocks = -(-enc_tokens // P) if enc_tokens > 0 else 0  # ceil div
-
-        # Total compact buffer size (video + encoder blocks)
-        compact_N = (compact_n + enc_blocks) * P
-
-        # ── Allocate compact buffers (cached, reallocate if shape changes) ──
-        compact_shape = (B, compact_N, H, D)
-        if self._fi_compact_k is None or self._fi_compact_k.shape != compact_shape:
-            self._fi_compact_k = q_video.new_zeros(*compact_shape)
-            self._fi_compact_v = q_video.new_zeros(*compact_shape)
-        ck, cv = self._fi_compact_k, self._fi_compact_v
-
-        # ── Copy video global frames into compact positions ──
-        for src_s, dst_s in meta.fi_global_copies:
-            ck[:, dst_s:dst_s + P] = k_global[:, src_s:src_s + P]
-            cv[:, dst_s:dst_s + P] = v_global[:, src_s:src_s + P]
-
-        # ── Copy video local (non-global) frames ──
-        for src_s, dst_s in meta.fi_local_copies:
-            ck[:, dst_s:dst_s + P] = k_video[:, src_s:src_s + P]
-            cv[:, dst_s:dst_s + P] = v_video[:, src_s:src_s + P]
-
-        # ── Copy encoder tokens after compact video frames ──
-        if enc_tokens > 0:
-            enc_start_dst = compact_n * P
-            enc_start_src = num_global_video_tokens
-            ck[:, enc_start_dst:enc_start_dst + enc_tokens] = (
-                k_global[:, enc_start_src:enc_start_src + enc_tokens]
-            )
-            cv[:, enc_start_dst:enc_start_dst + enc_tokens] = (
-                v_global[:, enc_start_src:enc_start_src + enc_tokens]
-            )
-            # Zero-pad remainder within last encoder block
-            remainder = enc_tokens % P
-            if remainder != 0:
-                pad_start = enc_start_dst + enc_tokens
-                pad_end = enc_start_dst + enc_blocks * P
-                ck[:, pad_start:pad_end] = 0
-                cv[:, pad_start:pad_end] = 0
-
-        # ── Create wrapper (once) ──
-        if self._fi_workspace is None:
-            self._fi_workspace = torch.empty(
-                128 * 1024 * 1024, dtype=torch.uint8, device=device,
-            )
-        if self._fi_wrapper is None:
-            self._fi_wrapper = flashinfer.BlockSparseAttentionWrapper(self._fi_workspace)
-
-        # ── Plan (cached, re-plan only when enc_tokens changes) ──
-        cached_enc = getattr(self, '_fi_cached_enc_tokens', -1)
-        if cached_enc != enc_tokens:
-            # Extend CSR with encoder block columns (every Q block attends to them)
-            if enc_blocks > 0:
-                base_indptr = meta.fi_indptr.tolist()
-                base_indices = meta.fi_indices.tolist()
-                MB = len(base_indptr) - 1
-                enc_col_ids = list(range(compact_n, compact_n + enc_blocks))
-                new_indices = []
-                new_indptr = [0]
-                for qi in range(MB):
-                    row_start = base_indptr[qi]
-                    row_end = base_indptr[qi + 1]
-                    row = base_indices[row_start:row_end] + enc_col_ids
-                    new_indices.extend(row)
-                    new_indptr.append(len(new_indices))
-                indptr = torch.tensor(new_indptr, dtype=torch.int32, device=device)
-                indices = torch.tensor(new_indices, dtype=torch.int32, device=device)
-            else:
-                indptr = meta.fi_indptr.to(device)
-                indices = meta.fi_indices.to(device)
-
-            dtype_map = {
-                torch.float16: "float16",
-                torch.bfloat16: "bfloat16",
-                torch.float32: "float32",
-            }
-            q_dtype_str = dtype_map.get(q_video.dtype, "bfloat16")
-
-            self._fi_wrapper.plan(
-                indptr=indptr,
-                indices=indices,
-                M=meta.fi_M,
-                N=compact_N,
-                R=P,
-                C=P,
-                num_qo_heads=H,
-                num_kv_heads=H,
-                head_dim=D,
-                q_data_type=q_dtype_str,
-            )
-            self._fi_cached_enc_tokens = enc_tokens
-
-        return {
-            "k_compact": ck,
-            "v_compact": cv,
-            "fi_wrapper": self._fi_wrapper,
-        }
 
     # ── Dense fallback ───────────────────────────────────────────────────
 
@@ -577,6 +497,7 @@ class LVSAAttentionImpl:
             scale=self.softmax_scale,
             dropout_p=0.0,
             is_causal=False,
+            enable_gqa=(key.shape[2] != query.shape[2]),   # GQA models (e.g. HunyuanVideo)
         )
         return out.transpose(1, 2)
 

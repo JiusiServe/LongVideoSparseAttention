@@ -29,13 +29,12 @@ uv pip install -e ".[flashinfer]"
 # Requires nvcc + CUDA toolkit for JIT compilation.
 
 # vllm-omni plugin (optional — only for serving; use a separate .venv-vllm).
-# vllm-omni 0.22.0rc1 is a pre-release built from git (not on PyPI); versions
-# intentionally differ (it rebases onto vllm 0.22.0). For the older
-# pip-installable 0.18.0 pair, use the release/v0.18.x branch.
+# vllm-omni 0.22.0 is a stable release built from the git tag to match vllm
+# 0.22.0. For the older pip-installable 0.18.0 pair, use the release/v0.18.x branch.
 uv pip install -e lvsa-vllm-omni/
 uv pip install "vllm==0.22.0"
 uv pip install --no-build-isolation \
-  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
+  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0"
 
 # VQeval (optional — for quality benchmarking)
 uv pip install -e vqeval/

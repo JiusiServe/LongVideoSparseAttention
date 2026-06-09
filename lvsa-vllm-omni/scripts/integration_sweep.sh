@@ -32,7 +32,7 @@ cd "$ROOT"
 
 # This sweep targets the vllm-omni-pinned venv (`.venv-vllm`), not the
 # standalone-engine venv (`.venv`).  The two venvs have incompatible torch
-# pins: vllm-omni 0.22.0rc1 (+ vllm 0.22.0) require torch 2.11 / CUDA 13 while
+# pins: vllm-omni 0.22.0 (+ vllm 0.22.0) require torch 2.11 / CUDA 13 while
 # the standalone engine uses torch 2.12.  See lvsa-vllm-omni/examples/README.md.
 PYTHON_VENV=${PYTHON_VENV:-$ROOT/.venv-vllm}
 PYTHON="$PYTHON_VENV/bin/python"
@@ -45,7 +45,7 @@ if [ ! -x "$PYTHON" ]; then
   echo "  source .venv-vllm/bin/activate" >&2
   echo "  uv pip install -e . -e lvsa-vllm-omni/ \"vllm==0.22.0\"" >&2
   echo "  uv pip install --no-build-isolation \\" >&2
-  echo "      'vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1'" >&2
+  echo "      'vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0'" >&2
   exit 1
 fi
 
@@ -72,22 +72,32 @@ mkdir -p "$OUTDIR"
 SUMMARY=${SUMMARY:-$OUTDIR/_summary.txt}
 
 # ─── Sweep matrix ────────────────────────────────────────────────────────────
-# Each entry: ID|LABEL|MODE|MODEL_PATH|SCRIPT|NUM_FRAMES|EXTRA_FLAGS|EXTRA_ENV
-#   MODE: offline | online
+# Each entry: ID|LABEL|MODE|FAMILY|MODEL_PATH|SCRIPT|NUM_FRAMES|EXTRA_FLAGS|EXTRA_ENV
+#   MODE:   offline | online
+#   FAMILY: wan | hunyuan | cosmos — required by offline_lvsa.py; ignored for
+#           online cells (the serve_*.sh wrappers set their own family env).
+#   EXTRA_FLAGS: offline_lvsa.py flags. Backend: omit = flashinfer (LVSA),
+#           "--backend sdpa" = LVSA via SDPA, "--backend dense" = NO LVSA
+#           (baseline). Rotation is ON by default; "--no-rotate" disables it.
+#           "--sparsity-scale F" sets LVSA_SPARSITY_SCALE (<1 = more sparse).
 #   EXTRA_ENV: pipe-separated KEY=VAL pairs applied just for this cell
+# NOTE: migrated from the retired per-family offline_wan.py/offline_hunyuan.py to
+# the unified offline_lvsa.py. Cell 05 adds SDPA-backend coverage (the other LVSA
+# path), which the per-family scripts didn't smoke-test.
 ROWS=(
-  # ─ Offline cells ─
-  "01|Wan 1.3B offline LVSA basic         |offline|$WAN13B_PATH|offline_wan.py     | 81|                                       |"
-  "02|Wan 1.3B offline LVSA + rotate      |offline|$WAN13B_PATH|offline_wan.py     | 81|                                       |"
-  "03|Wan 1.3B offline DENSE baseline     |offline|$WAN13B_PATH|offline_wan.py     | 81|--no-lvsa                              |"
-  "04|Wan 1.3B offline LVSA + sparsity 0.5|offline|$WAN13B_PATH|offline_wan.py     | 81|--sparsity-scale 0.5                   |"
-  "05|Wan 1.3B offline LVSA 2x extension  |offline|$WAN13B_PATH|offline_wan.py     |161|                                       |"
-  "06|Wan 14B  offline LVSA               |offline|$WAN14B_PATH|offline_wan.py     | 81|                                       |"
-  "07|HV 1.5   offline DENSE baseline     |offline|$HV15_PATH  |offline_hunyuan.py |129|--no-lvsa                              |"
-  "08|HV 1.5   offline LVSA               |offline|$HV15_PATH  |offline_hunyuan.py |129|                                       |"
+  # ─ Offline cells (all via the unified offline_lvsa.py) ─
+  "01|Wan 1.3B offline LVSA no-rotate     |offline|wan    |$WAN13B_PATH|offline_lvsa.py| 81|--no-rotate        |"
+  "02|Wan 1.3B offline LVSA + rotate      |offline|wan    |$WAN13B_PATH|offline_lvsa.py| 81|                   |"
+  "03|Wan 1.3B offline DENSE baseline     |offline|wan    |$WAN13B_PATH|offline_lvsa.py| 81|--backend dense    |"
+  "04|Wan 1.3B offline LVSA + sparsity 0.5|offline|wan    |$WAN13B_PATH|offline_lvsa.py| 81|--sparsity-scale 0.5|"
+  "05|Wan 1.3B offline LVSA SDPA backend  |offline|wan    |$WAN13B_PATH|offline_lvsa.py| 81|--backend sdpa     |"
+  "06|Wan 1.3B offline LVSA 2x extension  |offline|wan    |$WAN13B_PATH|offline_lvsa.py|161|                   |"
+  "07|Wan 14B  offline LVSA               |offline|wan    |$WAN14B_PATH|offline_lvsa.py| 81|                   |"
+  "08|HV 1.5   offline DENSE baseline     |offline|hunyuan|$HV15_PATH  |offline_lvsa.py|129|--backend dense    |"
+  "09|HV 1.5   offline LVSA               |offline|hunyuan|$HV15_PATH  |offline_lvsa.py|129|                   |"
   # ─ Online cells (real HTTP server + client roundtrip) ─
-  "09|Wan 1.3B ONLINE LVSA (HTTP roundtrip)|online|$WAN13B_PATH|serve_wan.sh       | 81|                                       |"
-  "10|HV 1.5   ONLINE LVSA (HTTP roundtrip)|online|$HV15_PATH  |serve_hunyuan.sh   |129|                                       |"
+  "10|Wan 1.3B ONLINE LVSA (HTTP roundtrip)|online|wan    |$WAN13B_PATH|serve_wan.sh    | 81|                   |"
+  "11|HV 1.5   ONLINE LVSA (HTTP roundtrip)|online|hunyuan|$HV15_PATH  |serve_hunyuan.sh|129|                   |"
 )
 
 # ─── Filtering ───────────────────────────────────────────────────────────────
@@ -141,9 +151,10 @@ wait_for_server() {
 
 # ─── Run loop ────────────────────────────────────────────────────────────────
 for row in "${ROWS[@]}"; do
-  IFS='|' read -r ID LABEL MODE MODEL_PATH SCRIPT NUM_FRAMES FLAGS EXTRA_ENV <<< "$row"
+  IFS='|' read -r ID LABEL MODE FAMILY MODEL_PATH SCRIPT NUM_FRAMES FLAGS EXTRA_ENV <<< "$row"
   ID=$(echo "$ID"|tr -d ' '); LABEL=$(echo "$LABEL"|sed 's/  *$//')
-  MODE=$(echo "$MODE"|tr -d ' '); MODEL_PATH=$(echo "$MODEL_PATH"|tr -d ' ')
+  MODE=$(echo "$MODE"|tr -d ' '); FAMILY=$(echo "$FAMILY"|tr -d ' ')
+  MODEL_PATH=$(echo "$MODEL_PATH"|tr -d ' ')
   SCRIPT=$(echo "$SCRIPT"|tr -d ' '); NUM_FRAMES=$(echo "$NUM_FRAMES"|tr -d ' ')
   FLAGS=$(echo "$FLAGS" | sed -e 's/^ *//' -e 's/ *$//')
 
@@ -171,6 +182,7 @@ for row in "${ROWS[@]}"; do
   case "$MODE" in
     offline)
       CUDA_VISIBLE_DEVICES="$CUDA_DEVICE" "$PYTHON" "$EXAMPLES/$SCRIPT" \
+        --family "$FAMILY" \
         --model "$MODEL_PATH" \
         --prompt "$PROMPT" \
         --num-frames "$NUM_FRAMES" \
@@ -226,15 +238,16 @@ for row in "${ROWS[@]}"; do
     msg="[$ID] FAIL no mp4 dt=${dt}s — $LABEL  (see $LOG)"
   else
     # Confirm LVSA dispatch line in log if LVSA expected
-    if echo "$FLAGS" | grep -q -- '--no-lvsa'; then
+    if echo "$FLAGS" | grep -q -- '--backend dense'; then
       msg="[$ID] OK   dt=${dt}s  (dense)            $LABEL"
     else
-      # Pull the n_blocks value from the LVSA-hook calibration line specifically
-      # (multiple files can contain n_blocks=N — we want the first match from
-      # the cell log, or the server log for online cells).
+      # Pull the n_blocks value from the LVSA calibration line (the backend prints
+      # "[LVSA] Step counter auto-calibrated: n_blocks=N"; the cosmos hook emits a
+      # similar n_blocks=N). Multiple files can contain it — take the first match
+      # from the cell log, or the server log for online cells.
       files=("$LOG")
       [ -n "${SERVE_LOG:-}" ] && [ -f "$SERVE_LOG" ] && files+=("$SERVE_LOG")
-      n_blocks=$(grep -h 'Step counter calibrated: n_blocks=' "${files[@]}" 2>/dev/null \
+      n_blocks=$(grep -hE 'n_blocks=[0-9]' "${files[@]}" 2>/dev/null \
                  | head -n 1 | sed -nE 's/.*n_blocks=([0-9]+).*/\1/p')
       [ -z "$n_blocks" ] && n_blocks="?"
       msg="[$ID] OK   dt=${dt}s  lvsa_blocks=$n_blocks  $LABEL"

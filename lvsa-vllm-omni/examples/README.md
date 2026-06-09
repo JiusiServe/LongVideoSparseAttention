@@ -5,7 +5,7 @@ Two ways to use the LVSA plugin with vllm-omni:
 | Mode | Files | Use case |
 |---|---|---|
 | **Online** (HTTP server) | `serve_wan.sh`, `serve_hunyuan.sh`, `online_client.py`, `online_curl.sh` | Production: serve generation behind an OpenAI-compatible API |
-| **Offline** (in-process Python) | `offline_wan.py`, `offline_hunyuan.py` | Scripting / batch eval / quick smoke tests |
+| **Offline** (in-process Python) | **`offline_lvsa.py`** | Scripting / batch eval / quick smoke tests — one script for all model families |
 
 Both modes engage LVSA through `LVSA_*` environment variables — see [`../README.md`](../README.md) for the full env-var reference.
 
@@ -23,12 +23,12 @@ source .venv-vllm/bin/activate
 uv pip install -e .                                # core lvsa
 uv pip install -e lvsa-vllm-omni/                  # this plugin
 
-# vllm 0.22.0 is on PyPI; vllm-omni 0.22.0rc1 is a pre-release NOT published to
-# PyPI, so build it from the git tag. Install vllm FIRST (vllm-omni does not
-# declare vllm as a dependency, so a lone vllm-omni install pulls no vllm).
+# vllm-omni 0.22.0 is a stable release — install it from the git tag to match
+# vllm 0.22.0. Install vllm FIRST (vllm-omni does not declare vllm as a
+# dependency, so a lone vllm-omni install pulls no vllm).
 uv pip install "vllm==0.22.0"
 uv pip install --no-build-isolation \
-  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
+  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0"
 ```
 
 > **Two-venv rule**: keep `.venv` for standalone (`examples/wan_generate.py`,
@@ -36,10 +36,9 @@ uv pip install --no-build-isolation \
 > scripts in this folder. The `.venv-vllm` torch is 2.11 / CUDA 13, so
 > standalone GPU work that depends on torch 2.12 features won't run there.
 >
-> **Version pairing is asymmetric — do NOT version-match.** vllm-omni
-> 0.22.0rc1 rebases onto vllm **0.22.0 (stable)**, so the correct pair is
-> `vllm==0.22.0` + `vllm-omni==0.22.0rc1`. vllm-omni 0.22.0rc1 is not on PyPI;
-> it is built from the git tag (also pinned in [`../Dockerfile`](../Dockerfile)).
+> **Version pairing is symmetric.** vllm-omni 0.22.0 is a stable release, so the
+> pair is `vllm==0.22.0` + `vllm-omni==0.22.0`. vllm-omni is built from the git
+> tag `@v0.22.0` (also pinned in [`../Dockerfile`](../Dockerfile)).
 > To stay on the older pip-installable line, use the `release/v0.18.x` branch
 > (`vllm==0.18.0` + `vllm-omni==0.18.0`).
 
@@ -108,61 +107,86 @@ vllm-omni accepts form-data (not JSON) on `POST /v1/videos`. Common fields:
 | `seed` | RNG seed |
 | `negative_prompt` | Optional |
 
-## Offline — direct Python API
+## Offline — direct Python API (`offline_lvsa.py`)
 
-For when you want to script generation without standing up an HTTP server (e.g. batch eval, smoke tests, integration into a larger pipeline).
+For when you want to script generation without standing up an HTTP server (e.g.
+batch eval, smoke tests, integration into a larger pipeline). **`offline_lvsa.py`
+is the single canonical offline runner** for every model family — pick the family
+with `--family {wan,hunyuan,cosmos}` and the attention path with `--backend`.
 
 ```bash
-# Wan
-python examples/offline_wan.py \
+# Wan 2.x (Wan 2.1 1.3B/14B, Wan 2.2-5B)
+python examples/offline_lvsa.py --family wan \
     --model /path/to/Wan2.1-T2V-1.3B-Diffusers \
     --prompt "A dog running in the forest." \
-    --num-frames 81 --steps 40 --seed 42 \
-    --output-name dog_offline.mp4
+    --num-frames 81 --steps 40 --guidance 5.0 --flow-shift 12 --seed 42 \
+    --output-name dog_offline
 
-# HunyuanVideo
-python examples/offline_hunyuan.py \
+# HunyuanVideo 1.5
+python examples/offline_lvsa.py --family hunyuan \
     --model /path/to/HunyuanVideo-1.5-Diffusers-480p_t2v \
     --prompt "A dog running in the forest." \
-    --num-frames 129 --steps 50 --seed 42 \
-    --output-name dog_hv_offline.mp4
+    --num-frames 129 --steps 50 --guidance 6.0 --flow-shift 5 --seed 42 \
+    --output-name dog_hv_offline
 
-# Dense baseline (no LVSA)
-python examples/offline_wan.py --no-lvsa --model ... --prompt ...
-
-# Aggressive sparsity
-python examples/offline_wan.py --sparsity-scale 0.5 --model ... --prompt ...
+# Cosmos 3.0 (720p; LVSA via the cross-attention hook)
+python examples/offline_lvsa.py --family cosmos \
+    --model /path/to/Cosmos3-Nano \
+    --num-frames 189 --height 720 --width 1280 --steps 35 --guidance 6.0 \
+    --output-name cosmos_offline
 ```
 
-These scripts:
-1. Set the LVSA env vars **before** importing `vllm_omni` (so the hooks install correctly).
-2. Call `register_lvsa_backend()` to wire LVSA into vllm-omni's backend enum.
-3. Instantiate `Omni(...)` and call `generate_one(...)`.
-4. Write the resulting frames to `.mp4` via `diffusers.utils.export_to_video`.
+### Backends and key flags
+
+| Flag | Values / default | Meaning |
+|---|---|---|
+| `--family` | `wan` \| `hunyuan` \| `cosmos` (required) | Model family — picks geometry + the LVSA integration path |
+| `--backend` | `flashinfer` (default) \| `sdpa` \| `dense` | `flashinfer`/`sdpa` = LVSA; **`dense` = no LVSA (baseline)** |
+| `--num-frames` | int | `(floor(N×ref_lat)−1)×4+1` for horizon N (ref_lat: wan2.1=21, wan2.2-5b=31, hunyuan=33, cosmos=48) |
+| `--flow-shift` | float (omit → pipeline default) | wan 480p=12 / 720p=5, hunyuan=5; see `../README.md` |
+| `--no-rotate` | flag | Disable rotating keyframes (rotation is **on** by default) |
+| `--sparsity-scale` | float (default 1.0) | `LVSA_SPARSITY_SCALE` — <1 = more sparse, >1 = less (scales the auto-keyframe target). LVSA-only |
+| `--eager` | flag | `enforce_eager` — disable torch.compile (lower peak mem, slower/step) |
+| `--offload` | `none` (default) \| `cpu` \| `layerwise` | DiT offload to free VRAM for the VAE decode on long clips |
+| `--steps` `--guidance` `--seed` `--height` `--width` `--fps` `--output-dir` `--output-name` | | standard; `--output-name` required |
+
+> Replaces the old per-family `offline_wan.py` / `offline_hunyuan.py`. The
+> `--no-lvsa` baseline is now `--backend dense`. (`--tensor-parallel-size` is not
+> exposed — `offline_lvsa.py` runs single-GPU, TP=1; use the **server** scripts
+> for tensor parallelism.)
+
+What it does:
+1. Sets the `LVSA_*` env vars (latent-frame counts, backend, keyframes; `LVSA_COSMOS3_HOOK=1` for cosmos) **before** importing `vllm_omni`.
+2. Calls `register_lvsa_backend()` to wire LVSA into vllm-omni's backend enum. For `wan`/`hunyuan` it selects the LVSA attention **backend** (`diffusion_attention_config={self: LVSA}`); for `cosmos` it installs the cross-attention **hook**.
+3. Instantiates `Omni(...)`, runs `generate(...)`, and emits a parseable `[BENCH] gen_s=… peak_mb=…` line.
+4. Writes the frames to `.mp4` via `diffusers.utils.export_to_video`.
 
 ## Verifying LVSA engaged
 
-Look for these log lines after either mode:
+`offline_lvsa.py` prints a config header and a parseable benchmark line:
 
 ```
-[LVSA-hook] Installed LVSA hook on WanSelfAttention (T_lat=21, sparsity_scale=1.0)
-[LVSA-hook] Step counter calibrated: n_blocks=30 cfg_passes=2
-[LVSA-MASK] step=0  T_lat=21  W=3  |G|=21  kfi=1
+[offline_lvsa] family=hunyuan backend=flashinfer lvsa=True T_lat=33 frames=129 832x480 steps=50
+[BENCH] gen_s=52.36 peak_mb=… steps=50 frames=129 s_per_step=…
 ```
 
-If you see `[LVSA-FALLBACK]` warnings instead, see [`../../docs/troubleshooting.md`](../../docs/troubleshooting.md).
+Plus an engagement line from whichever LVSA path is active — the attention
+**backend** (`wan`/`hunyuan`) or the cross-attention **hook** (`cosmos`,
+`[LVSA-hook] …`). A persistent `[LVSA-FALLBACK]` warning means LVSA did **not**
+engage (e.g. geometry mismatch) — see [`../../docs/troubleshooting.md`](../../docs/troubleshooting.md).
+(`--backend dense` runs with **no** LVSA on purpose — the baseline.)
 
 ## Multi-GPU
 
-For tensor-parallel (Ulysses-style) generation across GPUs, set the `TP` env var on the server scripts or `--tensor-parallel-size` on the offline scripts:
+For tensor-parallel (Ulysses-style) generation across GPUs, set the `TP` env var on the server scripts:
 
 ```bash
 TP=2 examples/serve_wan.sh /path/to/Wan2.1-T2V-14B-Diffusers
-# or
-python examples/offline_wan.py --tensor-parallel-size 2 --model ... --prompt ...
 ```
 
-**Constraint**: `seq_len = T_lat × patches_per_frame` must be divisible by `tensor_parallel_size`.
+`offline_lvsa.py` is single-GPU (TP=1) by design — for multi-GPU use the server
+path above. **Constraint**: `seq_len = T_lat × patches_per_frame` must be
+divisible by `tensor_parallel_size`.
 
 ## Common gotchas
 

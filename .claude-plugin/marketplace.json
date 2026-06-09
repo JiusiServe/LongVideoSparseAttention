@@ -8,7 +8,7 @@
       "name": "lvsa-quickstart",
       "source": "./skills/lvsa-quickstart",
       "description": "Install LVSA and generate your first long video. Picks SDPA vs FlashInfer, sets the right LVSA_REFERENCE_LATENT_FRAMES per model, verifies the sparse path engaged.",
-      "version": "1.1.0"
+      "version": "1.2.0"
     },
     {
       "name": "lvsa-tuning",
@@ -31,8 +31,8 @@
     {
       "name": "lvsa-vllm-omni",
       "source": "./skills/lvsa-vllm-omni",
-      "description": "Configure and run the LVSA vllm-omni serving plugin: env vars, geometry overrides, hooks for Wan vs HunyuanVideo, multi-GPU Ulysses.",
-      "version": "1.1.0"
+      "description": "Configure and run the LVSA vllm-omni plugin: env vars, geometry overrides, hooks for Wan vs HunyuanVideo, Cosmos 3.0 (offline + cross-attention hook), multi-GPU Ulysses.",
+      "version": "1.3.0"
     },
     {
       "name": "lvsa-reproduce-paper",

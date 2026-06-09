@@ -49,8 +49,8 @@ docker run --gpus all \
 
 - `lvsa>=0.1.0` (the core library)
 - `torch>=2.1.0`
-- `vllm==0.22.0` (PyPI) + `vllm-omni==0.22.0rc1` (built from git; **not** on PyPI).
-  Versions intentionally differ — vllm-omni 0.22.0rc1 rebases onto vllm 0.22.0.
+- `vllm==0.22.0` (PyPI) + `vllm-omni==0.22.0` (built from the git tag `@v0.22.0`).
+  Symmetric pairing — both are 0.22.0.
   For the older pip-installable pair (`0.18.0`/`0.18.0`), use the `release/v0.18.x` branch.
 - Optional: `flashinfer-python>=0.2` (for FlashInfer LVSA backend)
 - `flash_attn` is **not required** — torch SDPA dispatches to Flash Attention v2 internally

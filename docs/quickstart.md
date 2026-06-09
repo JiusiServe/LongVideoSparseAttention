@@ -61,16 +61,18 @@ This path uses the LVSA plugin inside [vLLM-Omni](https://github.com/vllm-projec
 docker run --rm --gpus '"device=0"' --ipc=host --shm-size=2g \
     -v /path/to/models:/models \
     lvsa-vllm-omni:latest \
-    python lvsa-vllm-omni/examples/offline_hunyuan.py \
+    python lvsa-vllm-omni/examples/offline_lvsa.py --family hunyuan \
         --model /models/HunyuanVideo-1.5-Diffusers-480p_t2v \
-        --num-frames 129 --steps 50 \
+        --num-frames 129 --steps 50 --guidance 6.0 --flow-shift 5 \
         --prompt "A dog running in the forest." \
-        --output-name benchmarks/hv_1x.mp4
+        --output-name benchmarks/hv_1x
 ```
 
-`offline_hunyuan.py` engages LVSA for you: it sets `LVSA_HUNYUAN_HOOK=1` and
-the per-role `diffusion_attention_config` ( `{"per_role": {"self": {"backend":
-"LVSA"}}}` ) on the `Omni(...)` call. Under the hood the key settings are:
+`offline_lvsa.py --family hunyuan` engages LVSA for you: it selects the LVSA
+attention **backend** via the per-role `diffusion_attention_config`
+( `{"per_role": {"self": {"backend": "LVSA"}}}` ) on the `Omni(...)` call (Wan
+uses the same backend path; only Cosmos uses a hook). Under the hood the key
+settings are:
 - per-role AttentionConfig selecting `LVSA` for the self-attention role
   (vllm-omni 0.22 replaced the `DIFFUSION_ATTENTION_BACKEND` env var)
 - `LVSA_AUTO_KEYFRAMES=1` — auto-derive the keyframe interval

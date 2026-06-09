@@ -28,6 +28,7 @@ class TestImportSurface:
         assert hasattr(register, "register_lvsa_backend")
         assert hasattr(register, "maybe_install_hunyuan_hook")
         assert hasattr(register, "maybe_install_wan_hook")
+        assert hasattr(register, "maybe_install_cosmos3_hook")
 
     def test_register_lvsa_backend_lazy_imports(self):
         """register_lvsa_backend must defer the vllm-omni import until called."""
@@ -72,6 +73,52 @@ class TestMaybeInstallHunyuanHook:
         # "Hook installation failed" or similar. We just verify no exception
         # bubbled up and there's some output.
         assert "Hook" in captured.out or "failed" in captured.out or "Installed" in captured.out
+
+
+class TestMaybeInstallCosmos3Hook:
+    """LVSA_COSMOS3_HOOK gating — mirrors the wan/hunyuan installers."""
+
+    def test_disabled_by_default(self, clean_env):
+        """Without LVSA_COSMOS3_HOOK=1, install is a silent no-op."""
+        from lvsa_vllm_omni.register import maybe_install_cosmos3_hook
+        maybe_install_cosmos3_hook()  # should not raise
+
+    def test_disabled_when_explicitly_false(self, monkeypatch, clean_env, capsys):
+        monkeypatch.setenv("LVSA_COSMOS3_HOOK", "0")
+        from lvsa_vllm_omni.register import maybe_install_cosmos3_hook
+        maybe_install_cosmos3_hook()
+        # Falsy → silent, no output
+        assert capsys.readouterr().out == ""
+
+    def test_enabled_without_t_lat_warns(self, monkeypatch, clean_env, capsys):
+        """LVSA_COSMOS3_HOOK=1 but T_lat unset → warn-and-skip, no raise."""
+        monkeypatch.setenv("LVSA_COSMOS3_HOOK", "1")
+        from lvsa_vllm_omni.register import maybe_install_cosmos3_hook
+        maybe_install_cosmos3_hook()
+        captured = capsys.readouterr()
+        # Either the explicit "T_lat not set" warning, or — if vllm-omni's
+        # cosmos3 import is attempted first and fails — the graceful failure.
+        assert (
+            "Warning" in captured.out
+            or "TOTAL_LATENT_FRAMES" in captured.out
+            or "failed" in captured.out
+        )
+
+    def test_enabled_with_t_lat_attempts_install(self, monkeypatch, clean_env, capsys):
+        """With both env vars set, attempts install — fails gracefully w/o vllm-omni."""
+        monkeypatch.setenv("LVSA_COSMOS3_HOOK", "1")
+        monkeypatch.setenv("LVSA_TOTAL_LATENT_FRAMES", "48")
+        from lvsa_vllm_omni.register import maybe_install_cosmos3_hook
+        maybe_install_cosmos3_hook()  # must not raise — except Exception is caught
+        captured = capsys.readouterr()
+        # Without vllm-omni the cosmos3_hook import raises, caught and printed as
+        # "Cosmos3 hook installation failed: ...". (With vllm-omni it would install.)
+        assert (
+            "failed" in captured.out
+            or "Cosmos3" in captured.out
+            or "Installed" in captured.out
+            or "hook" in captured.out.lower()
+        )
 
 
 class TestHookBoolParsing:

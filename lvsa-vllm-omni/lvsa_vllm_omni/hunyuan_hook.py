@@ -10,7 +10,7 @@ Triggered automatically by ``register_lvsa_backend()`` when ``LVSA_HUNYUAN_HOOK=
 """
 
 import os
-from typing import Any, Optional
+from typing import Optional
 
 import torch
 import torch.nn.functional as F

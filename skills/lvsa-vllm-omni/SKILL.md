@@ -16,12 +16,11 @@ Path: [`lvsa-vllm-omni/`](../../lvsa-vllm-omni/)
 ```bash
 pip install -e .                  # LVSA core
 pip install -e lvsa-vllm-omni/    # The plugin (registers entry-point)
-# vllm 0.22.0 is on PyPI; vllm-omni 0.22.0rc1 is a pre-release built from git
-# (NOT on PyPI). Versions intentionally differ — vllm-omni 0.22.0rc1 rebases
-# onto vllm 0.22.0. Use a separate venv (torch 2.11 / CUDA 13).
+# vllm-omni 0.22.0 is a stable release — install it from the git tag to match
+# vllm 0.22.0. Use a separate venv (torch 2.11 / CUDA 13).
 pip install "vllm==0.22.0"
 pip install --no-build-isolation \
-  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
+  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0"
 ```
 
 After install, the plugin auto-loads when vllm-omni starts. For the older
@@ -57,6 +56,29 @@ vllm serve --omni --model Wan2.2-T2V-14B \
 
 Wan requires `LVSA_WAN_HOOK=1` explicitly. Without it, Wan's `_sp_plan` pre-shards the sequence and geometry detection fails silently.
 
+### Cosmos 3.0 (experimental — plugin-only, offline + hook)
+
+Cosmos has **no standalone adapter** and engages LVSA through a **cross-attention
+hook** (`LVSA_COSMOS3_HOOK=1`, patches `Cosmos3CrossAttention.forward`), not the
+attention backend. cosmos3 is included in **v0.22.0 stable**, so the same
+`@v0.22.0` install covers it (no `main` build needed). Run it through the offline runner:
+
+```bash
+.venv-vllm/bin/python lvsa-vllm-omni/examples/offline_lvsa.py \
+    --family cosmos --model /data/Cosmos3-Nano \
+    --num-frames 189 --height 720 --width 1280 \
+    --steps 35 --guidance 6.0 --flow-shift 10 --backend flashinfer \
+    --output-name cosmos_1x
+```
+
+`--family cosmos` sets `LVSA_COSMOS3_HOOK=1`, `LVSA_REFERENCE_LATENT_FRAMES=48`,
+and `model_config={"guardrails": False}` for you. Cosmos specifics: **720p
+native**, single-GPU (TP=1), **~400-frame single-shot cap** (T_lat=100 ≈ 2.08×
+ref), guardrails **must** be off, and **SDPA-LVSA does not beat dense up to the
+cap — use `--backend flashinfer`** for the speedup. At 1× horizon LVSA runs dense
+(identical output). `enable_cpu_offload` is rejected (no separate text encoder) →
+use `--offload layerwise` only if VRAM-constrained (usually unnecessary on 80 GB).
+
 ### Convenience wrapper
 
 A shell wrapper that sets the right env vars per model family:
@@ -76,7 +98,7 @@ PORT=8200 DTYPE=float16 examples/vllm_omni_serve.sh wan ...
 | Var | Default | Purpose |
 |---|---|---|
 | `--diffusion-attention-config` (CLI flag, not env) | (platform default) | `'{"per_role": {"self": {"backend": "LVSA"}}}'` to engage. The serve wrapper injects it. |
-| `LVSA_REFERENCE_LATENT_FRAMES` | `21` | Per-model training horizon. **CRITICAL.** Wan=21, HV=33, Cog=13. |
+| `LVSA_REFERENCE_LATENT_FRAMES` | `21` | Per-model training horizon. **CRITICAL.** Wan2.1=21, Wan2.2-5B=31, HV=33, Cosmos=48, Cog=13. |
 | `LVSA_AUTO_KEYFRAMES` | `1` | Auto-derive keyframe interval from frame count |
 | `LVSA_WAN_HOOK` | `0` | **Required for Wan**. Off for HunyuanVideo. |
 | `LVSA_ROTATE_KEYFRAMES` | `0` | Shift keyframe grid each denoising step (recommended at extension) |

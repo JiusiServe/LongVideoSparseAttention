@@ -17,9 +17,7 @@ from typing import Any, Optional
 
 import torch
 
-from lvsa.sparse_attention import (
-    compute_auto_kfi, get_window_bounds, lvsa_sdpa,
-)
+from lvsa.sparse_attention import lvsa_sdpa
 
 from .config import LVSAConfig
 from ._fallback import warn_fallback

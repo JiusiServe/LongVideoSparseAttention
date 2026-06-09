@@ -39,11 +39,11 @@ lvsa-vllm-omni/
 
 ```bash
 pip install -e lvsa-vllm-omni/
-# vllm-omni 0.22.0rc1 is a pre-release (not on PyPI) — build it from git.
-# Versions intentionally differ: vllm-omni 0.22.0rc1 rebases onto vllm 0.22.0.
+# vllm-omni 0.22.0 is a stable release — install it from the git tag to match
+# vllm 0.22.0.
 pip install "vllm==0.22.0"
 pip install --no-build-isolation \
-  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
+  "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0"
 
 # vllm-omni 0.22 selects the attention backend per role via AttentionConfig
 # (the DIFFUSION_ATTENTION_BACKEND env var was removed). The `python -m
