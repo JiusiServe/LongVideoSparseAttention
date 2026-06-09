@@ -41,15 +41,14 @@ RUN --mount=type=cache,target=/root/.cache/uv  \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-cache-dir "git+https://github.com/huggingface/diffusers.git@main#egg=diffusers[test]"
 
-# ── vllm (PyPI) + vllm-omni (git pre-release) ──
-# Versions intentionally differ: vllm-omni 0.22.0rc1 rebases onto vllm 0.22.0.
-# vllm-omni 0.22.0rc1 is not published to PyPI, so build it from the git tag.
-# Install vllm first — vllm-omni does not declare vllm as a dependency.
+# ── vllm (PyPI) + vllm-omni (git tag) ──
+# vllm-omni 0.22.0 is a stable release — build it from the git tag to match
+# vllm 0.22.0. Install vllm first — vllm-omni does not declare vllm as a dependency.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install "vllm==0.22.0"
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-build-isolation \
-    "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0rc1"
+    "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@v0.22.0"
 
 # ── NO flash_attn — torch SDPA dispatches to FA2 internally ──
 

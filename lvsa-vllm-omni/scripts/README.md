@@ -15,8 +15,8 @@ QA we run before tagging a release.
 ## Prerequisites
 
 - The `lvsa-vllm-omni` plugin venv with `vllm==0.22.0` (PyPI) and
-  `vllm-omni==0.22.0rc1` (built from git — not on PyPI; versions intentionally
-  differ). See [`../examples/README.md`](../examples/README.md) for the setup.
+  `vllm-omni==0.22.0` (built from the git tag `@v0.22.0`; symmetric pairing).
+  See [`../examples/README.md`](../examples/README.md) for the setup.
   The sweep expects `$ROOT/.venv-vllm/bin/python` by default; override with
   `PYTHON_VENV=...`.
 - A GPU with ≥ 24 GB VRAM for Wan 1.3B; ≥ 80 GB for Wan 14B or HunyuanVideo at ≥ 1.5×.
@@ -124,4 +124,4 @@ Edit the `ROWS=(...)` array in `integration_sweep.sh`. Each row is pipe-separate
 ID|LABEL|MODE|MODEL_PATH|SCRIPT|NUM_FRAMES|EXTRA_FLAGS|EXTRA_ENV
 ```
 
-`SCRIPT` is the basename of a file in `lvsa-vllm-omni/examples/` (e.g. `offline_wan.py`, `serve_hunyuan.sh`).
+`SCRIPT` is the basename of a file in `lvsa-vllm-omni/examples/` (e.g. `offline_lvsa.py`, `serve_hunyuan.sh`).

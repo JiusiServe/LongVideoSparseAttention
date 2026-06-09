@@ -49,7 +49,7 @@ The OOM trace points at `vae.decode` / the VAE decoder's `up_block` (e.g. `pipel
 
 ### Fix (vLLM-Omni)
 
-**Enable VAE tiling + slicing** — they decode the latents in chunks and are effectively lossless. With them, HunyuanVideo 1.5 runs at **129 frames (reference length) on a single 80 GB A100** with LVSA. This is the default in `offline_hunyuan.py` and `serve_hunyuan.sh`; if you call the Python API directly:
+**Enable VAE tiling + slicing** — they decode the latents in chunks and are effectively lossless. With them, HunyuanVideo 1.5 runs at **129 frames (reference length) on a single 80 GB A100** with LVSA. This is the default in `offline_lvsa.py` (`--family hunyuan`) and `serve_hunyuan.sh`; if you call the Python API directly:
 
 ```python
 Omni(

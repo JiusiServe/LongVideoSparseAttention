@@ -172,6 +172,14 @@ def parse_args() -> argparse.Namespace:
         "Default 1.0 preserves the original behaviour.",
     )
     lvsa.add_argument(
+        "--reference-latent-frames",
+        type=int,
+        default=None,
+        help="Override the model's training horizon in LATENT frames (the "
+        "adapter default is 21 for Wan2.1). Set 31 for Wan2.2-TI2V-5B (121 "
+        "frames / new 16x VAE) so its native 1x isn't mistaken for an extension.",
+    )
+    lvsa.add_argument(
         "--auto-keyframes",
         action="store_true",
         help="Automatically compute key-frame-interval so that total attended "
@@ -374,6 +382,7 @@ def main() -> None:
         lvsa_processor = install_lvsa_processors(
             pipe, args, rank, world, adapter,
             sparsity_scale=args.sparsity_scale,
+            reference_latent_frames=args.reference_latent_frames,
         )
     elif rank == 0:
         print("[attn] using standard full attention (no LVSA)")

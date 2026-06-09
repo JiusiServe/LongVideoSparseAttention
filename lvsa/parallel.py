@@ -52,6 +52,7 @@ def install_lvsa_processors(
     world: int,
     adapter: ModelAdapter,
     sparsity_scale: float = 1.0,
+    reference_latent_frames: Optional[int] = None,
 ) -> DistributedLVSAProcessor:
     """
     Compute LVSA parameters from pipeline metadata and generation arguments,
@@ -70,7 +71,13 @@ def install_lvsa_processors(
     # Use adapter for model-specific geometry
     total_lat_frames = adapter.latent_frames(args.num_frames, pipe)
     num_patches = adapter.patches_per_frame(args.height, args.width, pipe)
-    ref_lat_frames = adapter.reference_latent_frames(pipe)
+    # Caller may override the adapter's training horizon (e.g. Wan2.2-TI2V-5B is
+    # 31 latent frames / 121 frames, not the WanAdapter's default 21).
+    ref_lat_frames = (
+        reference_latent_frames
+        if reference_latent_frames is not None
+        else adapter.reference_latent_frames(pipe)
+    )
 
     if rank == 0:
         print(

@@ -780,8 +780,12 @@ class DistributedLVSAProcessor:
         enc_tokens : number of encoder tokens appended to k_global (0 for
                      single-stream models like Wan).
         """
-        # Re-plan only when enc_tokens changes (first call, or 0 → N).
-        if self._fi_planned and getattr(self, '_fi_enc_tokens', 0) == enc_tokens:
+        # Gen-only CSR: the encoder/text K/V is NOT appended as block columns
+        # here — it is handled as a separate dense term and combined via
+        # log-sum-exp in _compute_lvsa_flashinfer (avoiding the zero-padded
+        # encoder-block phantom-key bug). Replanned after a metadata rebuild
+        # (which resets self._fi_planned, e.g. rotating keyframes).
+        if self._fi_planned:
             return
 
         device = query.device
@@ -789,33 +793,8 @@ class DistributedLVSAProcessor:
         D = query.shape[3]
         P = self.num_patches
 
-        # ── Extend CSR for encoder tokens (if any) ──────────────────────
-        # Encoder tokens are appended after the compact video frames in the
-        # KV buffer.  We add ceil(enc_tokens / P) extra block columns that
-        # every Q block row attends to.
-        base_indptr = self._fi_indptr.tolist()
-        base_indices = self._fi_indices.tolist()
-        compact_n = self._fi_compact_n
-
-        enc_blocks = -(-enc_tokens // P) if enc_tokens > 0 else 0  # ceil div
-        if enc_blocks > 0:
-            MB = len(base_indptr) - 1
-            new_indices = []
-            new_indptr = [0]
-            enc_col_ids = list(range(compact_n, compact_n + enc_blocks))
-            for qi in range(MB):
-                row_start = base_indptr[qi]
-                row_end = base_indptr[qi + 1]
-                row = base_indices[row_start:row_end] + enc_col_ids
-                new_indices.extend(row)
-                new_indptr.append(len(new_indices))
-            indptr = torch.tensor(new_indptr, dtype=torch.int32, device=device)
-            indices = torch.tensor(new_indices, dtype=torch.int32, device=device)
-            N = (compact_n + enc_blocks) * P
-        else:
-            indptr = self._fi_indptr.to(device)
-            indices = self._fi_indices.to(device)
-            N = self._fi_N
+        indptr = self._fi_indptr.to(device)
+        indices = self._fi_indices.to(device)
 
         # Allocate workspace (128 MB)
         if not hasattr(self, '_fi_workspace') or self._fi_workspace is None:
@@ -836,17 +815,19 @@ class DistributedLVSAProcessor:
             indptr=indptr,
             indices=indices,
             M=self._fi_M,
-            N=N,
+            N=self._fi_N,
             R=P,
             C=P,
             num_qo_heads=H,
             num_kv_heads=H,
             head_dim=D,
             q_data_type=q_dtype_str,
+            kv_data_type=q_dtype_str,
+            o_data_type=q_dtype_str,
         )
         self._fi_planned = True
         self._fi_enc_tokens = enc_tokens
-        self._fi_N_actual = N  # total KV length including encoder blocks
+        self._fi_N_actual = self._fi_N
 
     def _compute_lvsa_flashinfer(
         self,
@@ -856,7 +837,15 @@ class DistributedLVSAProcessor:
         k_global: torch.Tensor,
         v_global: torch.Tensor,
     ) -> torch.Tensor:
-        """FlashInfer block-sparse LVSA — buffer fill + delegates to ``lvsa_flashinfer()``."""
+        """FlashInfer block-sparse LVSA via LSE-merge.
+
+        Gen video tokens go through the fused block-sparse kernel; the
+        encoder/text tokens are computed as a SEPARATE dense term and combined
+        exactly via log-sum-exp. This replaces the old zero-padded encoder block
+        (phantom zero keys diluting every query when the text length was not a
+        multiple of P). CP-aware: under world>1 each rank merges its own Q shard
+        against the replicated encoder K/V.
+        """
         B, local_seq, H, D = query.shape
         P = self.num_patches
         M = self._fi_M
@@ -867,9 +856,8 @@ class DistributedLVSAProcessor:
         enc_tokens = total_global_tokens - num_global_video_tokens
 
         self._ensure_flashinfer_planned(query, enc_tokens)
-        compact_N = self._fi_N_actual
-
-        # ── Build compact KV buffer ──
+        # ── Gen-only compact KV buffer (encoder handled separately) ──
+        compact_N = self._fi_compact_n * P
         compact_shape = (B, compact_N, H, D)
         if self._fi_compact_k is None or self._fi_compact_k.shape != compact_shape:
             self._fi_compact_k = query.new_zeros(*compact_shape)
@@ -880,28 +868,14 @@ class DistributedLVSAProcessor:
         for src_s, dst_s in self._fi_global_copies:
             ck[:, dst_s:dst_s + P] = k_global[:, src_s:src_s + P]
             cv[:, dst_s:dst_s + P] = v_global[:, src_s:src_s + P]
-
         # Local (non-global) video frames → compact positions
         for src_s, dst_s in self._fi_local_copies:
             ck[:, dst_s:dst_s + P] = key[:, src_s:src_s + P]
             cv[:, dst_s:dst_s + P] = value[:, src_s:src_s + P]
 
-        # Encoder tokens → appended after compact video frames
-        if enc_tokens > 0:
-            enc_start_dst = self._fi_compact_n * P
-            enc_start_src = num_global_video_tokens
-            ck[:, enc_start_dst:enc_start_dst + enc_tokens] = (
-                k_global[:, enc_start_src:enc_start_src + enc_tokens]
-            )
-            cv[:, enc_start_dst:enc_start_dst + enc_tokens] = (
-                v_global[:, enc_start_src:enc_start_src + enc_tokens]
-            )
-            remainder = enc_tokens % P
-            if remainder != 0:
-                pad_start = enc_start_dst + enc_tokens
-                pad_end = enc_start_dst + (-(-enc_tokens // P)) * P
-                ck[:, pad_start:pad_end] = 0
-                cv[:, pad_start:pad_end] = 0
+        # Encoder/text K/V split back out for a SEPARATE dense term (no padding).
+        k_text = k_global[:, num_global_video_tokens:]
+        v_text = v_global[:, num_global_video_tokens:]
 
         # ── Pad Q to M = MB * P if needed (cached, tail stays zero) ──
         if local_seq < M:
@@ -912,7 +886,31 @@ class DistributedLVSAProcessor:
         else:
             q_padded = query
 
-        return lvsa_flashinfer(q_padded, ck, cv, self._fi_wrapper, local_seq, M)
+        # ── gen block-sparse + dense encoder term, combined via exact
+        #    log-sum-exp. FlashInfer returns LSE in log2 (= log2(sum exp)),
+        #    so the merge weights use exp2. This replaces the old zero-padded
+        #    encoder block (which attended to phantom zero keys when the text
+        #    length was not a multiple of P).
+        out = query.new_empty(B, local_seq, H, D)
+        for b in range(B):
+            o_gen, lse_gen = self._fi_wrapper.run(
+                q_padded[b], ck[b], cv[b], return_lse=True,
+            )
+            o_gen = o_gen[:local_seq].float()
+            lse_gen = lse_gen[:local_seq]
+            if enc_tokens > 0:
+                o_txt, lse_txt = flashinfer.single_prefill_with_kv_cache(
+                    query[b].contiguous(), k_text[b].contiguous(),
+                    v_text[b].contiguous(), causal=False, return_lse=True,
+                )
+                o_txt = o_txt.float()
+                mm = torch.maximum(lse_gen, lse_txt)
+                w_gen = torch.exp2(lse_gen - mm).unsqueeze(-1)
+                w_txt = torch.exp2(lse_txt - mm).unsqueeze(-1)
+                out[b] = ((o_gen * w_gen + o_txt * w_txt) / (w_gen + w_txt)).to(query.dtype)
+            else:
+                out[b] = o_gen.to(query.dtype)
+        return out
 
 
 # Backwards-compatible alias for existing code that references the old name.

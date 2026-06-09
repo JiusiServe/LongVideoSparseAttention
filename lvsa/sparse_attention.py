@@ -333,6 +333,9 @@ class LVSAMetadata:
     fi_local_copies: List[Tuple[int, int]]
 
     @classmethod
+    @torch.compiler.disable  # data-dependent CSR build: opaque to dynamo so it
+    # does not graph-break / recompile per step under torch.compile (the eager
+    # standalone is unaffected; this only matters under vllm-omni's compile).
     def build(
         cls,
         total_latent_frames: int,
@@ -653,12 +656,17 @@ def lvsa_sdpa(
 
     Parameters
     ----------
-    query, key, value : [B, local_seq, H, D]
-    k_global, v_global : [B, num_global*P + enc_tokens, H, D]
+    query : [B, local_seq, H, D]
+    key, value, k_global, v_global : [B, *, H_kv, D]
+        ``H_kv`` may be < ``H`` (grouped-query attention). When so, the SDPA
+        kernel handles head broadcasting natively (``enable_gqa=True``) — the
+        caller must NOT repeat-KV up to ``H`` first (doing so wastes ~4x KV
+        bandwidth + VRAM). When ``H_kv == H`` this is a no-op.
     metadata : LVSAMetadata with local_frames and window_ctx
     attention_backend : optional backend hint for dispatch_attention_fn
     """
     B, local_seq, H, D = query.shape
+    enable_gqa = key.shape[2] != H
     output = query.new_empty(B, local_seq, H, D)
 
     _dispatch_fn = _get_dispatch_attention_fn()
@@ -682,6 +690,7 @@ def lvsa_sdpa(
             output[:, q_l_start:q_l_end] = _dispatch_fn(
                 q_chunk, k_ctx, v_ctx,
                 attn_mask=None, dropout_p=0.0, is_causal=False,
+                enable_gqa=enable_gqa,
                 backend=attention_backend, parallel_config=None,
             )
         else:
@@ -690,7 +699,7 @@ def lvsa_sdpa(
             v_t = v_ctx.transpose(1, 2)
             out = F.scaled_dot_product_attention(
                 q_t, k_t, v_t, attn_mask=None,
-                dropout_p=0.0, is_causal=False,
+                dropout_p=0.0, is_causal=False, enable_gqa=enable_gqa,
             )
             output[:, q_l_start:q_l_end] = out.transpose(1, 2)
 

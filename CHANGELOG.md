@@ -2,6 +2,66 @@
 
 All notable changes to LVSA will be documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-06-08
+
+### Fixed
+
+- **vLLM-Omni plugin: ~30 GB memory overhead eliminated.** The FlashInfer LVSA
+  backend instantiated a runner *per attention layer*, each permanently caching
+  a 128 MB workspace + compact-K/V scratch (~1 GB/layer → ~30 GB on a 40-layer
+  model). A process-wide shared runner (`flashinfer_runner.get_shared_runner()`)
+  is now reused across all layers. Plugin peak (Wan2.1-14B, 1×, 480p, FlashInfer)
+  drops **74.3 → 44.0 GB**, matching the diffusers standalone; HunyuanVideo 1.5
+  plugin at 1× goes from OOM to fitting (~61 GB).
+- **Wan2.2-TI2V-5B LVSA geometry.** Both paths mishandled the model's new
+  high-compression VAE (spatial 16 / temporal 4): the Wan adapter's default
+  reference horizon (21) treated the native 121-frame 1× as a 1.48× *extension*
+  (over-sparsifying at 1×), and the plugin's geometry detection lacked the 720p
+  patches-per-frame (880, vs the 480p default 1560) → silently fell back to
+  dense. Fixed via the new reference-horizon / patches-per-frame overrides below.
+
+### Added
+
+- **`lvsa-vllm-omni/examples/offline_lvsa.py`** — a single offline runner for all
+  model families (`--family {wan,hunyuan,cosmos}`), superseding the per-family
+  `offline_wan.py` / `offline_hunyuan.py`. Attention path via
+  `--backend {flashinfer,sdpa,dense}` (`dense` = no-LVSA baseline); knobs
+  `--sparsity-scale`, `--ref-lat`, `--patches-per-frame`, `--no-rotate`,
+  `--offload`, `--eager`.
+- **`--reference-latent-frames`** on `examples/wan_generate.py` and a matching
+  `reference_latent_frames` override on `install_lvsa_processors`
+  (`lvsa/parallel.py`) — set the training horizon in latent frames (e.g. 31 for
+  Wan2.2-TI2V-5B vs the adapter default 21).
+- `flashinfer_runner.get_shared_runner()` — process-wide shared FlashInfer LVSA runner.
+- Cosmos 3.0 run guidance in the `lvsa-vllm-omni` skill (plugin-only; offline +
+  cross-attention hook; vllm-omni-main venv, 720p, ~400-frame single-shot cap).
+
+### Changed
+
+- HunyuanVideo plugin horizon ceiling is **~1.5×**: vLLM-Omni runs the HV 3D VAE
+  decode in fp32 (~+14 GB vs the bf16 standalone), so the plugin maxes at ~80 GB
+  by 1.5×. The diffusers standalone carries HV ≥2× (ceiling ~3×).
+- `lvsa-vllm-omni/scripts/integration_sweep.sh` migrated onto `offline_lvsa.py`
+  (adds SDPA-backend coverage; `--no-lvsa` → `--backend dense`).
+- **Pinned vLLM-Omni to `v0.22.0` stable** (was `v0.22.0rc1`). The pairing is now
+  symmetric (`vllm==0.22.0` + `vllm-omni==0.22.0`). The plugin's dependency
+  surface is byte-identical between rc1 and v0.22.0 (verified: imports +
+  monkeypatch signatures + enum registration smoke-pass), so this is a pin bump
+  with no code change. **Cosmos 3 is now included in v0.22.0 stable** — it no
+  longer requires a `main` build, so one stable install covers Wan / HunyuanVideo
+  / Cosmos.
+
+### Deprecated
+
+- `lvsa-vllm-omni/examples/offline_wan.py` and `offline_hunyuan.py` — superseded
+  by `offline_lvsa.py`; slated for removal.
+
+### Removed
+
+- Dead `_build_flashinfer_args` path and its orphaned `_fi_*` scratch buffers in
+  `attention_impl.py` (the pre-LSE-merge FlashInfer buffer builder, unused since
+  the LSE-merge runner replaced it), plus several unused imports.
+
 ## [1.1.0] — 2026-06-02
 
 ### vLLM-Omni plugin — upgraded to vllm-omni 0.22.0rc1

@@ -57,6 +57,7 @@ def register_lvsa_backend():
     # and a no-op if the trigger is not set.
     maybe_install_hunyuan_hook()
     maybe_install_wan_hook()
+    maybe_install_cosmos3_hook()
 
 
 def maybe_install_hunyuan_hook():
@@ -105,3 +106,28 @@ def maybe_install_wan_hook():
             print("[LVSA] Warning: LVSA_WAN_HOOK=1 but LVSA_TOTAL_LATENT_FRAMES not set")
     except Exception as e:
         print(f"[LVSA] Wan hook installation failed: {e}")
+
+
+def maybe_install_cosmos3_hook():
+    """Install NVIDIA Cosmos 3 LVSA hook if LVSA_COSMOS3_HOOK=1.
+
+    Patches ``Cosmos3CrossAttention`` (the diffusion/generation pathway) at the
+    class level so the gen video stream uses sparse LVSA while the understanding
+    (text/VLM) K/V are appended as always-attended globals.
+
+    Must be called before the model is instantiated. Cosmos 3 lives only in
+    vllm-omni main (not in any tagged release yet), so the import is guarded.
+    Reads total_latent_frames from LVSA_TOTAL_LATENT_FRAMES at forward time.
+    """
+    if os.environ.get("LVSA_COSMOS3_HOOK", "").lower() not in ("1", "true", "yes"):
+        return
+
+    try:
+        from lvsa_vllm_omni.cosmos3_hook import install_cosmos3_lvsa_hook
+        T_lat = os.environ.get("LVSA_TOTAL_LATENT_FRAMES")
+        if T_lat:
+            install_cosmos3_lvsa_hook(total_latent_frames=int(T_lat))
+        else:
+            print("[LVSA] Warning: LVSA_COSMOS3_HOOK=1 but LVSA_TOTAL_LATENT_FRAMES not set")
+    except Exception as e:
+        print(f"[LVSA] Cosmos3 hook installation failed: {e}")
