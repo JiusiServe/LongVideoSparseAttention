@@ -334,9 +334,9 @@ class LVSAAttentionImpl:
             )
             return self._dense_attention(query, key, value)
 
-        # Track denoising step
+        # Track denoising step (tick advances the per-call step counter)
         counter = _get_step_counter()
-        step_idx = counter.tick(id(self), seq_len)
+        counter.tick(id(self), seq_len)
 
         return self._lvsa_attention(query, key, value, total_frames, P, text_tokens)
 

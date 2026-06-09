@@ -17,7 +17,20 @@ Reference adapters:
 | HunyuanVideo 1.5 | `lvsa/adapters/hunyuan_video.py` | Dual-stream | ~330 | Text and video have separate Q/K/V projections |
 | CogVideoX 5B | `lvsa/adapters/cogvideox.py` | Joint-attention | ~190 | Shared Q/K/V projection over joint text+video |
 
-## The 11 methods to implement
+## First decide: ABC adapter vs. processor swap
+
+The `ModelAdapter` ABC assumes a **single joint sequence** flows through one attention call (it exposes `extract_qkv` / `format_output` over one hidden-state tensor). Most DiTs fit. **Some don't** — if the model's attention takes the text and video streams as *separate tensors* with *asymmetric* attention (e.g. one causal, one full), forcing the ABC fights the design.
+
+For those, use a **drop-in attention-processor swap** instead — see `lvsa/cosmos3.py` (Cosmos 3.0) as the reference:
+
+- diffusers' `Cosmos3AttnProcessor.__call__(attn, und_seq, gen_seq, rotary_emb)` runs `und` (text/VLM) as causal self-attn and `gen` (video) as full attn over `cat([k_und, k_gen])`.
+- `Cosmos3LVSAAttnProcessor` replicates the `und` path byte-identically and LVSA-izes only the `gen` path (window gen↔gen + keyframes; all `k_und` appended as global). It calls the core directly (`LVSAMetadata`, `lvsa_sdpa`, `build_global_kv`, `compute_auto_kfi`) — **no ABC subclass**.
+- `install_cosmos3_lvsa(transformer, num_frames, height, width, ...)` swaps the processor onto every `transformer.layers[i].self_attn` (diffusers' `set_processor`).
+- Prove correctness with a **1×-equivalence test**: at `T_lat == reference_latent_frames`, `compute_auto_kfi` → `kfi=1` → every frame global → the LVSA gen path must equal the model's stock dense attention to within bf16 noise. (`tests/test_cosmos3_processor.py` is the template.)
+
+Decision rule: **single joint sequence → ABC adapter** (rest of this skill). **Separate streams / asymmetric attention → processor swap** (mirror `lvsa/cosmos3.py`, skip the ABC). The geometry helpers (`patches_per_frame`, `latent_frames`, `reference_latent_frames`) are needed either way.
+
+## The 11 methods to implement (ABC adapter path)
 
 The `ModelAdapter` ABC groups methods into 4 families.
 

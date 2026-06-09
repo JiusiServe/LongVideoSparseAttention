@@ -7,8 +7,8 @@
     {
       "name": "lvsa-quickstart",
       "source": "./skills/lvsa-quickstart",
-      "description": "Install LVSA and generate your first long video. Picks SDPA vs FlashInfer, sets the right LVSA_REFERENCE_LATENT_FRAMES per model, verifies the sparse path engaged.",
-      "version": "1.2.0"
+      "description": "Install LVSA and generate your first long video. Picks SDPA vs FlashInfer, sets the right LVSA_REFERENCE_LATENT_FRAMES per model (Wan/HunyuanVideo/Cosmos 3.0/CogVideoX), verifies the sparse path engaged.",
+      "version": "1.3.0"
     },
     {
       "name": "lvsa-tuning",
@@ -25,14 +25,14 @@
     {
       "name": "lvsa-add-model",
       "source": "./skills/lvsa-add-model",
-      "description": "Add LVSA support for a new video diffusion model by implementing the ModelAdapter ABC and wiring it into examples/.",
-      "version": "1.0.0"
+      "description": "Add LVSA support for a new video diffusion model — implement the ModelAdapter ABC, or use the processor-swap path (like Cosmos 3.0) when the model's attention is separate-stream/asymmetric — and wire it into examples/.",
+      "version": "1.1.0"
     },
     {
       "name": "lvsa-vllm-omni",
       "source": "./skills/lvsa-vllm-omni",
-      "description": "Configure and run the LVSA vllm-omni plugin: env vars, geometry overrides, hooks for Wan vs HunyuanVideo, Cosmos 3.0 (offline + cross-attention hook), multi-GPU Ulysses.",
-      "version": "1.3.0"
+      "description": "Configure and run the LVSA vllm-omni plugin: env vars, geometry overrides, hooks for Wan vs HunyuanVideo, Cosmos 3.0 (offline + cross-attention hook; points to the standalone path too), multi-GPU Ulysses.",
+      "version": "1.4.0"
     },
     {
       "name": "lvsa-reproduce-paper",

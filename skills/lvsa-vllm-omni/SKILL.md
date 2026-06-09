@@ -56,12 +56,18 @@ vllm serve --omni --model Wan2.2-T2V-14B \
 
 Wan requires `LVSA_WAN_HOOK=1` explicitly. Without it, Wan's `_sp_plan` pre-shards the sequence and geometry detection fails silently.
 
-### Cosmos 3.0 (experimental — plugin-only, offline + hook)
+### Cosmos 3.0 (experimental — plugin offline + hook)
 
-Cosmos has **no standalone adapter** and engages LVSA through a **cross-attention
+In the **plugin**, Cosmos engages LVSA through a **cross-attention
 hook** (`LVSA_COSMOS3_HOOK=1`, patches `Cosmos3CrossAttention.forward`), not the
 attention backend. cosmos3 is included in **v0.22.0 stable**, so the same
 `@v0.22.0` install covers it (no `main` build needed). Run it through the offline runner:
+
+> **Standalone (non-serving) path also exists now.** `examples/cosmos_generate.py`
+> + `lvsa/cosmos3.py::install_cosmos3_lvsa` run Cosmos LVSA directly on the
+> diffusers `Cosmos3OmniPipeline` (single-GPU, SDPA), via a **processor swap**
+> rather than this plugin hook. It needs **diffusers main** (`>=0.39.0.dev0`). See
+> the repo `examples/README.md`. The plugin path below is for vllm-omni serving.
 
 ```bash
 .venv-vllm/bin/python lvsa-vllm-omni/examples/offline_lvsa.py \

@@ -9,7 +9,7 @@
 ## Features
 
 - **Training-free**: drop-in replacement for the attention layer; no weight changes.
-- **Model-agnostic**: same engine drives single-stream (Wan), dual-stream (HunyuanVideo), and joint-attention (CogVideoX) DiTs via a thin per-model adapter.
+- **Model-agnostic**: same engine drives single-stream (Wan), dual-stream (HunyuanVideo), separate-stream (Cosmos 3.0), and joint-attention (CogVideoX) DiTs via a thin per-model adapter (or a processor swap where the model's attention doesn't fit the adapter ABC, as with Cosmos).
 - **Single-GPU and multi-GPU**: context-parallel (Ulysses) on top of standard PyTorch distributed primitives.
 - **vLLM-Omni integration**: production-ready plugin for the [vLLM-Omni](https://github.com/vllm-project/vllm-omni) serving framework — enable LVSA with one environment variable.
 - **Two backends**: SDPA (always-on) and FlashInfer (block-sparse CSR, fastest at long sequences).
@@ -134,7 +134,10 @@ For the algorithmic details, see [`docs/architecture.md`](docs/architecture.md).
 |---|---|---|---|
 | Wan 2.1 / 2.2 T2V | 1.3B, 14B | **stable** | `21` |
 | HunyuanVideo 1.5 | — | **stable** | `33` |
+| Cosmos 3.0 | Nano 16B | experimental — correctness-validated (standalone + plugin); SDPA, single-GPU | `48` |
 | CogVideoX | 5B | experimental (correctness only — no speedup) | `13` |
+
+Cosmos 3.0 standalone needs **diffusers main** (`>=0.39.0.dev0`, for `Cosmos3OmniPipeline`) and engages LVSA via a **processor swap** (`lvsa/cosmos3.py::install_cosmos3_lvsa`) rather than the adapter ABC — its separate-stream attention (text/VLM `und` causal + video `gen` full-attention) doesn't fit the ABC. The MVP is single-GPU, SDPA, fixed keyframes; FlashInfer + Ulysses are follow-ups.
 
 Adding a new model takes ~200 lines (one adapter file). See [`docs/architecture.md`](docs/architecture.md).
 
@@ -144,6 +147,7 @@ Adding a new model takes ~200 lines (one adapter file). See [`docs/architecture.
 examples/
 ├── wan_generate.py           Wan 2.1 / 2.2 generation (1.3B and 14B)
 ├── hunyuan_generate.py       HunyuanVideo 1.5 generation
+├── cosmos_generate.py        Cosmos 3.0 generation (experimental; diffusers main)
 ├── cogvideox_generate.py     CogVideoX 5B (experimental)
 └── vllm_omni_serve.sh        Minimal vllm-omni serving recipe
 ```

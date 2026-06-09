@@ -2,6 +2,52 @@
 
 All notable changes to LVSA will be documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Standalone Cosmos 3.0 LVSA (experimental).** A diffusers, single-GPU path for
+  NVIDIA Cosmos 3.0, independent of the vLLM-Omni plugin:
+  - `lvsa/cosmos3.py` — geometry helpers (`cosmos3_latent_frames`,
+    `cosmos3_patches_per_frame`, `COSMOS3_REFERENCE_LATENT_FRAMES=48`), the
+    `Cosmos3LVSAAttnProcessor` (LVSA on the video `gen` pathway only; the text/VLM
+    `und` causal path is byte-identical to diffusers' stock processor), and
+    `install_cosmos3_lvsa(transformer, num_frames, height, width, ...)` which swaps
+    the processor onto every `transformer.layers[i].self_attn`.
+  - `examples/cosmos_generate.py` — end-to-end generation (`--lvsa`, `out/adhoc/`).
+  - Engages via a **processor swap**, not the `ModelAdapter` ABC — Cosmos's
+    separate-stream asymmetric attention doesn't fit the ABC. Needs **diffusers
+    main** (`>=0.39.0.dev0`) for `Cosmos3OmniPipeline`. MVP: single-GPU, SDPA,
+    fixed keyframes (FlashInfer + Ulysses are follow-ups).
+  - Correctness validated: `tests/test_cosmos3_processor.py` (geometry,
+    **1×==dense equivalence** vs the real diffusers `Cosmos3AttnProcessor`,
+    sparse-engagement, installer-swap) + a 1-step GPU smoke across dense / 1× / 2×.
+- **`build_global_kv`** hoisted into the model-agnostic core
+  (`lvsa/sparse_attention.py`; previously only the plugin had a copy).
+
+### Fixed
+
+- `lvsa-vllm-omni/examples/offline_lvsa.py` raises a clear `RuntimeError` when the
+  pipeline returns no frames (`result.images is None`, or 0 frames after
+  conversion) instead of an opaque `AttributeError`.
+- `examples/cosmos_generate.py` passes `enable_safety_checker=False` to
+  `from_pretrained` so the pipeline doesn't construct `CosmosSafetyChecker` at load
+  (which requires the external `cosmos_guardrail` package).
+
+### Changed
+
+- Docs updated for the Cosmos standalone path and the processor-swap pattern:
+  `README.md` (supported models, examples), `examples/README.md`,
+  `docs/architecture.md` (new "when a model doesn't fit the ABC" section),
+  `docs/quickstart.md`.
+- Skills bumped: `lvsa-quickstart` 1.2.0 → 1.3.0, `lvsa-add-model` 1.0.0 → 1.1.0
+  (processor-swap path), `lvsa-vllm-omni` 1.3.0 → 1.4.0 (standalone pointer).
+- **Deduped `build_global_kv`.** The plugin's `lvsa_vllm_omni/global_kv.py` now
+  re-exports `build_global_kv` from the core (`lvsa.sparse_attention`) instead of
+  carrying a byte-identical copy; existing `from lvsa_vllm_omni.global_kv import
+  build_global_kv` imports (Wan / HunyuanVideo / Cosmos hooks, plugin tests) are
+  unchanged.
+
 ## [1.2.0] — 2026-06-08
 
 ### Fixed

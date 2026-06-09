@@ -6,6 +6,7 @@ Standalone generation scripts for each supported model + a vllm-omni serving rec
 |---|---|
 | [`wan_generate.py`](wan_generate.py) | Wan 2.1 / 2.2 single- or multi-GPU generation |
 | [`hunyuan_generate.py`](hunyuan_generate.py) | HunyuanVideo 1.5 single- or multi-GPU generation |
+| [`cosmos_generate.py`](cosmos_generate.py) | Cosmos 3.0 single-GPU generation (experimental; needs diffusers main) |
 | [`cogvideox_generate.py`](cogvideox_generate.py) | CogVideoX 5B (experimental — correctness only) |
 | [`vllm_omni_serve.sh`](vllm_omni_serve.sh) | Minimal vllm-omni serving wrapper |
 
@@ -74,6 +75,33 @@ python examples/hunyuan_generate.py \
 ```
 
 The `--output-latent` flag writes a `.pt` latent tensor (skipping the VAE decode), useful at sequence lengths where the VAE itself OOMs. Decode offline on a higher-memory GPU.
+
+### `cosmos_generate.py` — Cosmos 3.0 (experimental)
+
+```bash
+# 1× horizon (189 frames @ 720p, the native reference). At T_lat=48 == ref,
+# LVSA runs the dense regime (identical output) — sanity/baseline.
+python examples/cosmos_generate.py \
+    --model /path/to/Cosmos3-Nano \
+    --prompt "A dog running in the forest." \
+    --num-frames 189 --height 720 --width 1280 --steps 35 \
+    --lvsa --output-name cosmos_1x
+
+# 2× horizon (317 frames) — sparse attention engages (T_lat=80 > ref=48)
+python examples/cosmos_generate.py \
+    --model /path/to/Cosmos3-Nano \
+    --prompt "A dog running in the forest." \
+    --num-frames 317 --height 720 --width 1280 --steps 35 \
+    --lvsa --output-name cosmos_2x
+```
+
+**Requirements / notes:**
+- Needs **diffusers main** (`>=0.39.0.dev0`) for `Cosmos3OmniPipeline`. Standard-release diffusers (used by the other models) stops at Cosmos 2.5.
+- Cosmos is **separate-stream**: the diffusers `Cosmos3AttnProcessor` runs the text/VLM `und` tokens as causal self-attention and the video `gen` tokens as full attention over `cat([k_und, k_gen])`. LVSA wraps **only the gen pathway** (window gen↔gen + keyframes, all `und` kept global) and leaves the `und` causal path byte-identical. It engages via a **processor swap** (`lvsa/cosmos3.py::install_cosmos3_lvsa`), not the adapter ABC.
+- MVP scope: **single-GPU** (no `torchrun`), **SDPA** backend, fixed keyframes (no `--rotate-keyframes`). FlashInfer and Ulysses CP are follow-ups.
+- `reference_latent_frames=48` (189-frame native horizon) is the default; override with `--sparsity-scale < 1` for more sparsity below the cap.
+- The script passes `enable_safety_checker=False` to `from_pretrained` so the pipeline doesn't construct `CosmosSafetyChecker` (which needs the external `cosmos_guardrail` package).
+- Status: correctness-validated (CPU 1×==dense equivalence test + 1-step GPU smoke across dense / 1× / 2×). SDPA shows no speedup over dense up to Cosmos's ~400-frame single-shot cap — matching the plugin findings; the speedup lever is FlashInfer (planned). Output dir defaults to `out/adhoc/` (gitignored).
 
 ### `cogvideox_generate.py` — CogVideoX 5B (experimental)
 

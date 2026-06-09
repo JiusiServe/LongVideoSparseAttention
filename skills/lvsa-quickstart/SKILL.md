@@ -7,7 +7,7 @@ description: Install LVSA and generate your first long video. Use when setting u
 
 ## Overview
 
-LVSA (Long Video Sparse Attention) is a training-free block-sparse attention engine for video diffusion transformers (Wan 2.x, HunyuanVideo 1.5, CogVideoX). It accelerates long-video generation 1.4–3.8× and enables generation beyond the training horizon where dense attention OOMs on 80 GB GPUs. Code: <https://github.com/JiusiServe/LongVideoSparseAttention>.
+LVSA (Long Video Sparse Attention) is a training-free block-sparse attention engine for video diffusion transformers (Wan 2.x, HunyuanVideo 1.5, Cosmos 3.0 *(experimental)*, CogVideoX). It accelerates long-video generation 1.4–3.8× and enables generation beyond the training horizon where dense attention OOMs on 80 GB GPUs. Code: <https://github.com/JiusiServe/LongVideoSparseAttention>.
 
 This skill covers: installation, choosing a backend, setting the per-model reference, running a first generation, and verifying that LVSA is actually engaged (not silently falling back to dense).
 
@@ -63,9 +63,10 @@ This is the single most common LVSA configuration mistake. **Always set explicit
 |---|---|---|
 | Wan 2.1 / 2.2 (1.3B, 14B) | `21` | 81 |
 | HunyuanVideo 1.5 | `33` | 129 |
+| Cosmos 3.0 (Nano, experimental) | `48` | 189 (@720p) |
 | CogVideoX 5B | `13` | 49 |
 
-For the standalone example scripts the value is wired automatically by `lvsa/adapters/<model>.py::reference_latent_frames()`. Override only if your fork uses non-default geometry.
+For the standalone example scripts the value is wired automatically by `lvsa/adapters/<model>.py::reference_latent_frames()` (or, for Cosmos 3.0, by the `COSMOS3_REFERENCE_LATENT_FRAMES=48` default in `lvsa/cosmos3.py`). Override only if your fork uses non-default geometry. Cosmos 3.0 is standalone-only via `examples/cosmos_generate.py` (single-GPU, SDPA, needs diffusers main); see the `lvsa-vllm-omni` skill for the serving/plugin path.
 
 ## Run a first generation
 

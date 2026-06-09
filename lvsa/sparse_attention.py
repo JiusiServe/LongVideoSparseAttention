@@ -14,8 +14,8 @@ both the existing ``DistributedLVSAProcessor`` wrapper and the future
 """
 
 import math
-from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -214,6 +214,30 @@ def compute_global_indices(
         for i in range(n_keyframes):
             global_set.add((offset + i * key_frame_interval) % total_frames)
     return sorted(global_set)
+
+
+def build_global_kv(
+    key: torch.Tensor,
+    value: torch.Tensor,
+    global_indices: List[int],
+    num_patches: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Extract K/V tokens for the global (anchor) frames.
+
+    key, value : [B, seq, H, D]
+    global_indices : sorted global frame indices
+    num_patches : tokens per latent frame (P)
+    Returns (k_global, v_global) each [B, len(global_indices)*P, H, D].
+    Single-GPU = pure indexing (no communication).
+    """
+    if not global_indices:
+        B, _, H, D = key.shape
+        return key.new_empty(B, 0, H, D), value.new_empty(B, 0, H, D)
+    P = num_patches
+    g = torch.as_tensor(global_indices, dtype=torch.long, device=key.device)
+    offsets = torch.arange(P, dtype=torch.long, device=key.device)
+    idx = (g.unsqueeze(1) * P + offsets.unsqueeze(0)).flatten()
+    return key[:, idx], value[:, idx]
 
 
 def print_attention_mask_compact(
