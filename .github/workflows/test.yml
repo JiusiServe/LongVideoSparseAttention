@@ -1,0 +1,98 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: lvsa + vllm-omni (CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'lvsa-vllm-omni/pyproject.toml') }}
+
+      - name: Create venv
+        run: uv venv .venv --python 3.12
+
+      - name: Install LVSA core + dev
+        run: |
+          source .venv/bin/activate
+          # [diffusers,dev]: release diffusers (>=0.31) for test_riflex + the
+          # diffusers-free cosmos tests. NOT [all] — that pulls flashinfer, which
+          # is CUDA-only and won't build on a CPU runner. The cosmos tests needing
+          # diffusers *main* self-skip via pytest.importorskip(transformer_cosmos3).
+          uv pip install -e ".[diffusers,dev]"
+
+      - name: Install lvsa-vllm-omni + dev
+        run: |
+          source .venv/bin/activate
+          uv pip install -e "lvsa-vllm-omni/[dev]"
+
+      - name: Show installed packages
+        run: |
+          source .venv/bin/activate
+          uv pip list
+
+      - name: Run lvsa core tests
+        run: |
+          source .venv/bin/activate
+          pytest tests/ -v --tb=short
+
+      - name: Run lvsa-vllm-omni tests
+        run: |
+          source .venv/bin/activate
+          pytest lvsa-vllm-omni/tests/ -v --tb=short
+
+  vqeval:
+    name: vqeval (CPU, heavy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-vqeval-${{ runner.os }}-${{ hashFiles('vqeval/pyproject.toml') }}
+
+      - name: Create venv
+        run: uv venv .venv --python 3.12
+
+      - name: Install vqeval + dev
+        run: |
+          source .venv/bin/activate
+          uv pip install -e "vqeval/[dev]"
+
+      - name: Run vqeval tests
+        run: |
+          source .venv/bin/activate
+          pytest vqeval/tests/ -v --tb=short
