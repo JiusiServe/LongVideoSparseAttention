@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_cosmos3_geometry_720p_189f():
     from lvsa.cosmos3 import (cosmos3_latent_frames, cosmos3_patches_per_frame,
                               COSMOS3_REFERENCE_LATENT_FRAMES)
@@ -43,6 +46,8 @@ def _rope_tuple(s_und, s_gen, head_dim):
 
 
 def test_lvsa_processor_matches_dense_at_1x():
+    # Cosmos3 lives in diffusers main only — skip on release diffusers (e.g. CI).
+    pytest.importorskip("diffusers.models.transformers.transformer_cosmos3")
     from diffusers.models.transformers.transformer_cosmos3 import Cosmos3AttnProcessor
     from lvsa.cosmos3 import Cosmos3LVSAAttnProcessor
     torch.manual_seed(0)
@@ -61,6 +66,8 @@ def test_lvsa_processor_matches_dense_at_1x():
 
 
 def test_lvsa_processor_engages_sparse_above_ref():
+    # The processor's __call__ lazily imports transformer_cosmos3 (main-only).
+    pytest.importorskip("diffusers.models.transformers.transformer_cosmos3")
     from lvsa.cosmos3 import Cosmos3LVSAAttnProcessor
     torch.manual_seed(0)
     T_lat, P, ref, head_dim = 24, 2, 6, 16      # 4x horizon -> sparse
