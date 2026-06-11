@@ -127,7 +127,19 @@ These wire the adapter into the model's pipeline (find the right attention layer
 | HunyuanVideo 1.5 | `lvsa/adapters/hunyuan_video.py` | ~330 | Dual-stream, 3D RoPE, Qwen2.5-VL encoder. |
 | CogVideoX | `lvsa/adapters/cogvideox.py` | ~190 | Joint-attention, shared QKV. |
 
-For a step-by-step adapter authoring walkthrough, see the [`lvsa-add-model` skill](../skills/lvsa-add-model/).
+### When a model doesn't fit the ABC — the processor-swap path (Cosmos 3.0)
+
+Not every model maps onto the `ModelAdapter` ABC. **Cosmos 3.0** (`lvsa/cosmos3.py`) is *separate-stream*: diffusers' `Cosmos3AttnProcessor.__call__(attn, und_seq, gen_seq, rotary_emb)` takes the text/VLM (`und`) and video (`gen`) tokens as **two separate tensors** and runs two attentions — `und` causal self-attention, and `gen` full attention over `cat([k_und, k_gen])`. That asymmetric `(und, gen)` signature doesn't fit the ABC's single-sequence `extract_qkv`/`format_output` contract.
+
+Instead of forcing the ABC, Cosmos uses a **drop-in attention-processor swap**:
+
+- `Cosmos3LVSAAttnProcessor` replicates the `und` causal pathway byte-identically and replaces only the `gen` full-attention with the LVSA windowed pattern (window gen↔gen + keyframes/`n_first`, with **all** `k_und` kept global — appended after the gen anchors).
+- `install_cosmos3_lvsa(transformer, num_frames, height, width, ...)` builds one shared processor (geometry is identical per layer) and calls `set_processor` on every `transformer.layers[i].self_attn`.
+- It reuses the model-agnostic core directly (`LVSAMetadata`, `lvsa_sdpa`, `build_global_kv`, `compute_auto_kfi`) — no adapter, no CP plan (MVP is single-GPU).
+
+The contract is proven by a **1×-equivalence test**: at the native horizon (`T_lat == reference_latent_frames`) the auto-scheduler returns `kfi=1`, every gen frame becomes a global anchor, and the gen pathway reduces to the *exact* dense `cat([k_und, k_gen])` attention — matching diffusers' stock processor to within bf16 noise. Use this pattern when a new model's attention is asymmetric or otherwise doesn't fit the ABC.
+
+For a step-by-step adapter authoring walkthrough (and the processor-swap alternative), see the [`lvsa-add-model` skill](../skills/lvsa-add-model/).
 
 ## Backends
 
@@ -158,6 +170,7 @@ lvsa/
 ├── rope.py                    RoPE apply/slice helpers
 ├── device.py                  Device-agnostic helpers (CUDA / Ascend NPU / CPU)
 ├── riflex.py                  Optional RIFLEx RoPE rescaling
+├── cosmos3.py                 Cosmos 3.0 (experimental) — geometry + Cosmos3LVSAAttnProcessor + install_cosmos3_lvsa (processor swap, not the ABC)
 └── adapters/
     ├── base.py                ModelAdapter ABC
     ├── wan.py                 Wan 2.1 / 2.2

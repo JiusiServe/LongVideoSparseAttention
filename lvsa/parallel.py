@@ -6,10 +6,7 @@ passed in by the caller.
 """
 
 import argparse
-from typing import Any, Optional, Tuple, Union
-
-import torch
-import numpy as np
+from typing import Any, Optional, Tuple
 
 from .adapters.base import ModelAdapter
 from .lvsa_processor import (

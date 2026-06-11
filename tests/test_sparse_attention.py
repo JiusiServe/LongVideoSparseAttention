@@ -643,3 +643,29 @@ class TestImports:
         from lvsa import sparse_windowed_attention, LVSAMetadata
         assert callable(sparse_windowed_attention)
         assert hasattr(LVSAMetadata, "build")
+
+
+# ── build_global_kv tests ─────────────────────────────────────────────────────
+
+
+def test_build_global_kv_indexes_frames():
+    import torch
+    from lvsa.sparse_attention import build_global_kv
+    B, T, P, H, D = 1, 5, 2, 3, 4          # 5 frames, 2 tokens/frame
+    key = torch.arange(B * T * P * H * D, dtype=torch.float32).reshape(B, T * P, H, D)
+    value = key.clone()
+    kg, vg = build_global_kv(key, value, [0, 2], P)   # frames 0 and 2
+    assert kg.shape == (B, 2 * P, H, D)               # 2 globals * P tokens
+    # frame 0 -> tokens [0,1]; frame 2 -> tokens [4,5]
+    assert torch.equal(kg[:, 0:P], key[:, 0:P])
+    assert torch.equal(kg[:, P:2 * P], key[:, 4:4 + P])
+    assert torch.equal(vg, value[:, [0, 1, 4, 5]])
+
+
+def test_build_global_kv_empty():
+    import torch
+    from lvsa.sparse_attention import build_global_kv
+    key = torch.zeros(1, 6, 2, 4)
+    kg, vg = build_global_kv(key, key, [], 2)
+    assert kg.shape == (1, 0, 2, 4)
+    assert vg.shape == (1, 0, 2, 4)

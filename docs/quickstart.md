@@ -51,6 +51,20 @@ torchrun --nproc_per_node=2 examples/wan_generate.py \
 
 **Constraint**: `seq_len = T_lat × patches_per_frame` must be divisible by the GPU count.
 
+### Cosmos 3.0 (experimental, standalone)
+
+Cosmos 3.0 uses a separate code path (a processor swap, not the adapter ABC) and needs **diffusers main** (`>=0.39.0.dev0`):
+
+```bash
+python examples/cosmos_generate.py \
+    --model /path/to/Cosmos3-Nano \
+    --prompt "A dog running in the forest." \
+    --num-frames 317 --height 720 --width 1280 --steps 35 \
+    --lvsa --output-name cosmos_2x
+```
+
+Single-GPU only, SDPA backend, `reference_latent_frames=48` (189-frame native horizon → sparse engages above it). See [`../examples/README.md`](../examples/README.md#cosmos_generatepy--cosmos-30-experimental) for details and the architecture note on the [processor-swap path](architecture.md#when-a-model-doesnt-fit-the-abc--the-processor-swap-path-cosmos-30).
+
 ## Path B — vLLM-Omni serving (production deployment)
 
 This path uses the LVSA plugin inside [vLLM-Omni](https://github.com/vllm-project/vllm-omni) to serve generation requests over an OpenAI-compatible API.

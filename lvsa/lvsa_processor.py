@@ -23,7 +23,6 @@ from .sparse_attention import (
     compute_global_indices,
     expanded_window_bounds,
     get_window_bounds,
-    lvsa_flashinfer,
     lvsa_sdpa,
 )
 
