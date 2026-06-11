@@ -6,6 +6,12 @@ All notable changes to LVSA will be documented in this file. Format: [Keep a Cha
 
 ### Added
 
+- **Batched-input guard on `Cosmos3LVSAAttnProcessor`** (PR #5 review follow-up).
+  The processor mirrors the stock `Cosmos3AttnProcessor`, which flattens batch
+  into sequence — only correct for one sample per call. `Cosmos3OmniPipeline`
+  guarantees that (sequential CFG), but a batched (`B>1`) input now raises a
+  clear `NotImplementedError` instead of silently cross-contaminating samples.
+
 - **Standalone Cosmos 3.0 LVSA (experimental).** A diffusers, single-GPU path for
   NVIDIA Cosmos 3.0, independent of the vLLM-Omni plugin:
   - `lvsa/cosmos3.py` — geometry helpers (`cosmos3_latent_frames`,

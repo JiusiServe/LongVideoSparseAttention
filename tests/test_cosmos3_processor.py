@@ -105,3 +105,35 @@ def test_install_swaps_all_layers():
     assert n == 5
     for layer in tf.layers:
         assert isinstance(layer.self_attn.processor, Cosmos3LVSAAttnProcessor)
+
+
+def test_batched_input_raises_not_corrupts():
+    """B>1 must raise, never silently corrupt. The processor mirrors the stock
+    ``Cosmos3AttnProcessor`` byte-for-byte, and stock flattens batch into
+    sequence (``view(-1, H, D)`` + ``unsqueeze(0)``): at B>1 the und causal
+    mask would leak across batch elements and the gen LVSA metadata (built for
+    S_gen) would mis-cover a B*S_gen query. ``Cosmos3OmniPipeline`` never
+    batches (sequential CFG, one sample per call — verified on diffusers main),
+    so the guard only trips if a future caller batches. No diffusers import
+    needed: the guard fires before ``__call__``'s lazy import, so this test
+    runs on release diffusers too.
+    """
+    from lvsa.cosmos3 import Cosmos3LVSAAttnProcessor, _require_unbatched
+
+    # unit: the guard itself
+    ok_2d = torch.randn(6, 64)            # [S, C] (implicit single sample)
+    ok_3d = torch.randn(1, 6, 64)         # [1, S, C] (explicit B=1)
+    bad = torch.randn(2, 6, 64)           # [B=2, S, C]
+    _require_unbatched(ok_2d, ok_2d)      # no raise
+    _require_unbatched(ok_3d, ok_3d)      # no raise
+    with pytest.raises(NotImplementedError, match="batch"):
+        _require_unbatched(bad, ok_3d)
+    with pytest.raises(NotImplementedError, match="batch"):
+        _require_unbatched(ok_3d, bad)
+
+    # integration: __call__ rejects batched inputs before touching attn
+    proc = Cosmos3LVSAAttnProcessor(
+        total_latent_frames=4, num_patches=2, reference_latent_frames=2,
+    )
+    with pytest.raises(NotImplementedError, match="batch"):
+        proc(attn=None, und_seq=bad, gen_seq=bad, rotary_emb=None)

@@ -33,6 +33,29 @@ def cosmos3_patches_per_frame(height: int, width: int) -> int:
     return lat_h * lat_w
 
 
+def _require_unbatched(und_seq, gen_seq) -> None:
+    """Reject batched (B>1) inputs — raise instead of silently corrupting.
+
+    This processor mirrors the stock ``Cosmos3AttnProcessor`` byte-for-byte,
+    and stock flattens batch into sequence (``view(-1, H, D)`` then
+    ``unsqueeze(0)``). At B>1 that breaks both pathways: the und causal mask
+    leaks across batch elements, and the gen LVSA metadata (built for S_gen)
+    mis-covers a B*S_gen query. ``Cosmos3OmniPipeline`` never batches (CFG is
+    two sequential transformer calls; one sample per call), so this guard only
+    trips if a future caller batches. Proper B>1 support belongs upstream
+    first — stock shares the limitation.
+    """
+    for name, seq in (("und_seq", und_seq), ("gen_seq", gen_seq)):
+        if seq is not None and seq.ndim == 3 and seq.shape[0] != 1:
+            raise NotImplementedError(
+                f"Cosmos3LVSAAttnProcessor received batched {name} "
+                f"(batch={seq.shape[0]}). batch>1 is unsupported: the stock "
+                "Cosmos3AttnProcessor this mirrors flattens batch into "
+                "sequence, which cross-contaminates samples. Run samples "
+                "sequentially (Cosmos3OmniPipeline already does)."
+            )
+
+
 class Cosmos3LVSAAttnProcessor:
     """Drop-in for diffusers Cosmos3AttnProcessor that LVSA-izes the gen path.
 
@@ -61,6 +84,7 @@ class Cosmos3LVSAAttnProcessor:
         )
 
     def __call__(self, attn, und_seq, gen_seq, rotary_emb):
+        _require_unbatched(und_seq, gen_seq)
         # NOTE: mirrors diffusers Cosmos3AttnProcessor internals (private _rotate_half + projection attr names); re-verify on diffusers bump.
         from diffusers.models.transformers.transformer_cosmos3 import (
             _rotate_half, dispatch_attention_fn,
